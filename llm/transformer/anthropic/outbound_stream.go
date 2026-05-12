@@ -203,6 +203,15 @@ func (s *outboundStream) transformStreamChunk(event *httpclient.StreamEvent) (*l
 			switch *streamEvent.Delta.Type {
 			case "input_json_delta":
 				if streamEvent.Delta.PartialJSON != nil {
+					toolCall := state.toolCalls[state.toolIndex]
+					if toolCall == nil {
+						// Unknown / unsupported tool block (e.g. server_tool_use for
+						// web_search) was skipped by content_block_start, so toolCalls has
+						// no entry at this index. Silently drop this delta so the pipeline
+						// (and middlewares) keep flowing instead of panicking on nil.
+						return nil, nil
+					}
+
 					choice := llm.Choice{
 						Index: 0,
 						Delta: &llm.Message{
@@ -210,7 +219,7 @@ func (s *outboundStream) transformStreamChunk(event *httpclient.StreamEvent) (*l
 							ToolCalls: []llm.ToolCall{
 								{
 									Index: state.toolIndex,
-									ID:    state.toolCalls[state.toolIndex].ID,
+									ID:    toolCall.ID,
 									Type:  "function",
 									Function: llm.FunctionCall{
 										Arguments: *streamEvent.Delta.PartialJSON,

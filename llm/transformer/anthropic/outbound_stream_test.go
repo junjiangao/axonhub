@@ -40,6 +40,18 @@ func TestOutboundTransformer_StreamTransformation_WithTestData(t *testing.T) {
 			expectedFile: "llm-think.stream.jsonl",
 			platformType: PlatformDirect,
 		},
+		{
+			// Regression test for SIGSEGV when an upstream Anthropic stream contains
+			// server-side tool blocks (e.g. web_search). The outbound transformer
+			// must not panic on `input_json_delta` arriving for a content block that
+			// it skipped at content_block_start (server_tool_use is not mapped to an
+			// OpenAI tool_call). It should silently drop the delta and let the
+			// pipeline (and middlewares such as usage accounting) keep flowing.
+			name:         "response with web_search server tool",
+			streamFile:   "anthropic-web-search.stream.jsonl",
+			expectedFile: "llm-web-search.stream.jsonl",
+			platformType: PlatformDirect,
+		},
 	}
 
 	for _, tt := range tests {

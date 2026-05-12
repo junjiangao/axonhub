@@ -3,8 +3,10 @@ package httpclient
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 
@@ -133,7 +135,18 @@ func (s *defaultSSEDecoder) Next() bool {
 	default:
 	}
 
-	event, err := s.sseStream.Recv()
+	event, err := func() (ev sse.Event, err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.ErrorContext(s.ctx, "SSE decoder panicked in Recv",
+					slog.Any("panic", r),
+					slog.String("stack", string(debug.Stack())),
+				)
+				err = fmt.Errorf("sse decoder panic: %v", r)
+			}
+		}()
+		return s.sseStream.Recv()
+	}()
 	if err != nil {
 		if errors.Is(err, io.EOF) {
 			slog.DebugContext(s.ctx, "SSE stream closed")

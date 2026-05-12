@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"runtime/debug"
 	"sync"
 
 	"github.com/tidwall/sjson"
@@ -247,10 +248,17 @@ func captureRawProviderStream(outbound *PersistentOutboundTransformer, systemSer
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Warn(ctx, "captureRawProviderStream goroutine panicked, recovering",
+					fields := []log.Field{
 						log.Any("panic", r),
-						log.String("channel", channel.Name),
-					)
+						log.String("stack", string(debug.Stack())),
+					}
+					if channel != nil {
+						fields = append(fields,
+							log.String("channel", channel.Name),
+							log.Int("channel_id", channel.ID),
+						)
+					}
+					log.Warn(ctx, "captureRawProviderStream goroutine panicked, recovering", fields...)
 					rawStreamErr = fmt.Errorf("passthrough stream panic: %v", r)
 				} else {
 					rawStreamErr = stream.Err()
