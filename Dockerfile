@@ -24,7 +24,7 @@ COPY go.mod go.sum ./
 COPY llm/go.mod llm/go.sum llm/
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    GOTOOLCHAIN=auto go mod download
+    GOTOOLCHAIN=auto GOPROXY=https://goproxy.cn,direct go mod download
 
 COPY . .
 COPY --from=frontend-dist /dist /build/internal/server/static/dist
@@ -50,3 +50,4 @@ COPY --from=backend-builder /build/axonhub /app/axonhub
 
 EXPOSE 8090
 ENTRYPOINT ["/app/axonhub"]
+
