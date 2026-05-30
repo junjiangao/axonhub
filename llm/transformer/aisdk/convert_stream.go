@@ -297,7 +297,7 @@ func (s *aiSDKConvertStream) Next() bool {
 		}
 
 		// Handle finish reason
-		if choice.FinishReason != nil && !s.hasFinished {
+		if choice.FinishReason != nil && *choice.FinishReason != "" && !s.hasFinished {
 			s.hasFinished = true
 
 			// End any active content blocks

@@ -615,7 +615,7 @@ func convertToAnthropicResponse(chatResp *llm.Response) *Message {
 		}
 
 		// Convert finish reason
-		if choice.FinishReason != nil {
+		if choice.FinishReason != nil && *choice.FinishReason != "" {
 			switch *choice.FinishReason {
 			case "stop":
 				stopReason := "end_turn"

@@ -18,7 +18,7 @@ func hasFinishReason(resp *llm.Response) bool {
 	}
 
 	for _, choice := range resp.Choices {
-		if choice.FinishReason != nil {
+		if choice.FinishReason != nil && *choice.FinishReason != "" {
 			return true
 		}
 	}
