@@ -9,6 +9,7 @@ set -euo pipefail
 
 PATCHES_DIR="$(cd "$(dirname "$0")" && pwd)"
 PATCHES=(
+  "000-gitignore.patch"
   "001-local-config.patch"
   "002-bugfixes.patch"
   "003-testdata.patch"

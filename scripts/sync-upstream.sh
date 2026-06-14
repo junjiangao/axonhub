@@ -1,26 +1,32 @@
 #!/usr/bin/env bash
 #
-# sync-upstream.sh — 同步上游 unstable，从 axonhub-patches 取补丁并应用
+# sync-upstream.sh — 同步上游 unstable，生成本地工作分支并应用补丁
 #
 # 用法:
-#   ./scripts/sync-upstream.sh          # 标准同步
-#   ./scripts/sync-upstream.sh --dry    # 试运行
+#   ./scripts/sync-upstream.sh                    # 生成 work-YYYYMMDD
+#   ./scripts/sync-upstream.sh work/my-feature    # 指定工作分支名
+#   ./scripts/sync-upstream.sh --dry              # 试运行
 #
 set -euo pipefail
 
 UPSTREAM_REMOTE="upstream"
 UPSTREAM_BRANCH="unstable"
-MAIN_BRANCH="main"
-PATCHES_BRANCH="axonhub-patches"
-PATCHES_DIR=".patches"
-SCRIPTS_DIR="scripts"
+PATCHES_BRANCH="main"
 DRY_RUN=false
 
 for arg in "$@"; do
   case "$arg" in
     --dry) DRY_RUN=true ;;
+    -*)
+      echo "[!] 未知选项: $arg"
+      echo "用法: $0 [分支名] [--dry]"
+      exit 1
+      ;;
   esac
 done
+
+# 工作分支名：优先用参数，否则自动生成
+WORK_BRANCH="${1:-work-$(date '+%Y%m%d')}"
 
 run() {
   if [ "$DRY_RUN" = true ]; then
@@ -32,8 +38,10 @@ run() {
 }
 
 echo "============================================"
-echo "  AxonHub 上游同步脚本"
-echo "  分支: $MAIN_BRANCH ← $UPSTREAM_REMOTE/$UPSTREAM_BRANCH"
+echo "  AxonHub 同步脚本"
+echo "  上游: $UPSTREAM_REMOTE/$UPSTREAM_BRANCH"
+echo "  补丁: $PATCHES_BRANCH 分支"
+echo "  工  作分支: $WORK_BRANCH"
 echo "  日期: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "============================================"
 echo
@@ -45,37 +53,35 @@ if ! git remote get-url "$UPSTREAM_REMOTE" &>/dev/null; then
 fi
 
 # Step 1: 同步 unstable
-echo ">>> [1/5] 同步 $UPSTREAM_BRANCH 到最新上游..."
+echo ">>> [1/4] 同步 $UPSTREAM_BRANCH 到最新上游..."
 run git checkout "$UPSTREAM_BRANCH"
 run git pull "$UPSTREAM_REMOTE" "$UPSTREAM_BRANCH"
 run git push origin "$UPSTREAM_BRANCH"
 echo
 
-# Step 2: 重置 main 到 unstable
-echo ">>> [2/5] 重置 $MAIN_BRANCH 到 $UPSTREAM_BRANCH..."
-run git checkout "$MAIN_BRANCH"
-run git reset --hard "$UPSTREAM_BRANCH"
+# Step 2: 生成本地工作分支
+echo ">>> [2/4] 基于 $UPSTREAM_BRANCH 创建分支 $WORK_BRANCH..."
+if git rev-parse --verify "$WORK_BRANCH" &>/dev/null; then
+  echo "  [!] 分支 $WORK_BRANCH 已存在，删除重建..."
+  run git branch -D "$WORK_BRANCH"
+fi
+run git branch "$WORK_BRANCH" "$UPSTREAM_BRANCH"
+run git checkout "$WORK_BRANCH"
 echo
 
-# Step 3: 从 axonhub-patches 拉取补丁和相关文件
-echo ">>> [3/5] 从 $PATCHES_BRANCH 拉取补丁..."
-run git checkout "$PATCHES_BRANCH" -- "$PATCHES_DIR/" "$SCRIPTS_DIR/" .gitignore
+# Step 3: 从 main 拉取补丁
+echo ">>> [3/4] 从 $PATCHES_BRANCH 拉取补丁文件..."
+run git checkout "$PATCHES_BRANCH" -- .patches/ scripts/
 echo
 
-# Step 4: 应用本地补丁
-echo ">>> [4/5] 应用本地补丁..."
-run bash "$PATCHES_DIR/apply-patches.sh"
-echo
-
-# Step 5: 提交并推送
-MSG="chore: sync upstream $(date '+%Y%m%d')"
-echo ">>> [5/5] 提交并推送到 origin..."
-run git add -A
-run git commit -m "$MSG"
-run git push origin "$MAIN_BRANCH" --force-with-lease
+# Step 4: 应用补丁
+echo ">>> [4/4] 应用本地补丁..."
+run bash .patches/apply-patches.sh
 echo
 
 echo "============================================"
 echo "  同步完成"
-echo "  $MAIN_BRANCH: $(git rev-parse --short HEAD)"
+echo "  当前分支: $WORK_BRANCH ($(git rev-parse --short HEAD))"
+echo "  基于: $UPSTREAM_REMOTE/$UPSTREAM_BRANCH"
+echo "  补丁: $PATCHES_BRANCH 分支"
 echo "============================================"
