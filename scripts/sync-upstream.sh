@@ -13,6 +13,7 @@ UPSTREAM_REMOTE="upstream"
 UPSTREAM_BRANCH="unstable"
 PATCHES_BRANCH="main"
 DRY_RUN=false
+WORK_BRANCH=""
 
 for arg in "$@"; do
   case "$arg" in
@@ -22,11 +23,16 @@ for arg in "$@"; do
       echo "用法: $0 [分支名] [--dry]"
       exit 1
       ;;
+    *)
+      if [ -z "$WORK_BRANCH" ]; then
+        WORK_BRANCH="$arg"
+      fi
+      ;;
   esac
 done
 
 # 工作分支名：优先用参数，否则自动生成
-WORK_BRANCH="${1:-work-$(date '+%Y%m%d')}"
+WORK_BRANCH="${WORK_BRANCH:-work-$(date '+%Y%m%d')}"
 
 run() {
   if [ "$DRY_RUN" = true ]; then
