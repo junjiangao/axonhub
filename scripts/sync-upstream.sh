@@ -80,9 +80,11 @@ echo ">>> [3/4] 从 $PATCHES_BRANCH 拉取补丁文件..."
 run git checkout "$PATCHES_BRANCH" -- .patches/ scripts/
 echo
 
-# Step 4: 应用补丁
-echo ">>> [4/4] 应用本地补丁..."
+# Step 4: 应用补丁并合并提交
+echo ">>> [4/4] 应用补丁并合并提交..."
 run bash .patches/apply-patches.sh
+run git add -A
+run git commit -m "apply local patches on top of $UPSTREAM_BRANCH @ $(date '+%Y%m%d')"
 echo
 
 echo "============================================"
