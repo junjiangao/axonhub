@@ -1,0 +1,166 @@
+diff --git a/llm/transformer/openai/inbound.go b/llm/transformer/openai/inbound.go
+index 6112fddf..3825cba1 100644
+--- a/llm/transformer/openai/inbound.go
++++ b/llm/transformer/openai/inbound.go
+@@ -13,6 +13,7 @@ import (
+ 	"github.com/looplj/axonhub/llm/internal/pkg/xjson"
+ 	"github.com/looplj/axonhub/llm/streams"
+ 	transformer "github.com/looplj/axonhub/llm/transformer"
++	"github.com/samber/lo"
+ )
+ 
+ // InboundTransformer implements transformer.Inbound for OpenAI format.
+@@ -130,6 +131,12 @@ func (t *InboundTransformer) TransformStreamChunk(
+ 		return nil, nil
+ 	}
+ 
++	// Synthesize finish_reason for stream chunks when the upstream provider
++	// omits it (e.g. glm-5.1 never sets finish_reason in SSE chunks).
++	// The OpenAI spec expects finish_reason to be present when tool calls
++	// are returned, so we infer it from the presence of delta.tool_calls.
++	ensureStreamFinishReason(chatResp)
++
+ 	// Convert to OpenAI Response format
+ 	oaiResp := ResponseFromLLM(chatResp)
+ 
+@@ -145,6 +152,43 @@ func (t *InboundTransformer) TransformStreamChunk(
+ 	}, nil
+ }
+ 
++// ensureStreamFinishReason synthesizes finish_reason for stream chunks when the
++// upstream provider omits it.
++//
++// Two cases:
++//  1. A chunk with delta.tool_calls but no finish_reason → set "tool_calls"
++//  2. A terminal usage-only chunk (empty choices + usage) with no finish_reason
++//     in any choice → inject a synthetic choice with "stop".
++//
++// Case 2 follows the OpenAI SSE pattern where the final chunk carries both
++// finish_reason and usage metadata in a single event.
++func ensureStreamFinishReason(resp *llm.Response) {
++	hasFinishReason := false
++
++	for i := range resp.Choices {
++		c := &resp.Choices[i]
++		if c.FinishReason != nil {
++			hasFinishReason = true
++			continue
++		}
++		if c.Delta == nil || len(c.Delta.ToolCalls) == 0 {
++			continue
++		}
++		c.FinishReason = lo.ToPtr("tool_calls")
++		hasFinishReason = true
++	}
++
++	// Terminal usage-only chunk: inject a synthetic choice with "stop"
++	// so the client sees a finish_reason before [DONE].
++	if !hasFinishReason && len(resp.Choices) == 0 && resp.Usage != nil {
++		resp.Choices = append(resp.Choices, llm.Choice{
++			Index:        0,
++			Delta:        &llm.Message{},
++			FinishReason: lo.ToPtr("stop"),
++		})
++	}
++}
++
+ // isReasoningSignatureEvent checks if the response contains ONLY ReasoningSignature.
+ // This is a helper function to filter out reasoning signature events when transforming
+ // to OpenAI format, since OpenAI format doesn't support ReasoningSignature in streaming.
+diff --git a/llm/transformer/openai/inbound_test.go b/llm/transformer/openai/inbound_test.go
+index bfe4f00a..6c8871f1 100644
+--- a/llm/transformer/openai/inbound_test.go
++++ b/llm/transformer/openai/inbound_test.go
+@@ -415,6 +415,54 @@ func TestInboundTransformer_TransformStreamChunk(t *testing.T) {
+ 					*chatResp.Choices[0].FinishReason == "tool_calls"
+ 			},
+ 		},
++		{
++			name: "streaming chunk with tool calls but no finish_reason",
++			response: &llm.Response{
++				ID:      "chatcmpl-123",
++				Object:  "chat.completion.chunk",
++				Created: 1677652288,
++				Model:   "gpt-4",
++				Choices: []llm.Choice{
++					{
++						Index: 0,
++						Delta: &llm.Message{
++							Role: "assistant",
++							ToolCalls: []llm.ToolCall{
++								{
++									ID:   "call_123",
++									Type: "function",
++									Function: llm.FunctionCall{
++										Name:      "get_user_city",
++										Arguments: `{"user_id":"123"}`,
++									},
++								},
++							},
++						},
++						// FinishReason is intentionally nil to test synthesis
++					},
++				},
++			},
++			wantErr: false,
++			validate: func(event *httpclient.StreamEvent) bool {
++				if event.Type != "" {
++					return false
++				}
++
++				var chatResp llm.Response
++
++				err := json.Unmarshal(event.Data, &chatResp)
++				if err != nil {
++					return false
++				}
++
++				return chatResp.ID == "chatcmpl-123" &&
++					len(chatResp.Choices) > 0 &&
++					chatResp.Choices[0].Delta != nil &&
++					len(chatResp.Choices[0].Delta.ToolCalls) > 0 &&
++					chatResp.Choices[0].FinishReason != nil &&
++					*chatResp.Choices[0].FinishReason == "tool_calls"
++			},
++		},
+ 		{
+ 			name: "empty choices",
+ 			response: &llm.Response{
+@@ -429,6 +477,37 @@ func TestInboundTransformer_TransformStreamChunk(t *testing.T) {
+ 				return event.Type == ""
+ 			},
+ 		},
++		{
++			name: "usage-only chunk synthesizes stop finish_reason",
++			response: &llm.Response{
++				ID:      "chatcmpl-123",
++				Object:  "chat.completion.chunk",
++				Created: 1677652288,
++				Model:   "gpt-4",
++				Choices: []llm.Choice{},
++				Usage: &llm.Usage{
++					PromptTokens:     10,
++					CompletionTokens: 20,
++					TotalTokens:      30,
++				},
++			},
++			wantErr: false,
++			validate: func(event *httpclient.StreamEvent) bool {
++				if event.Type != "" {
++					return false
++				}
++				var chatResp llm.Response
++				err := json.Unmarshal(event.Data, &chatResp)
++				if err != nil {
++					return false
++				}
++				return len(chatResp.Choices) == 1 &&
++					chatResp.Choices[0].FinishReason != nil &&
++					*chatResp.Choices[0].FinishReason == "stop" &&
++					chatResp.Usage != nil &&
++					chatResp.Usage.TotalTokens == 30
++			},
++		},
+ 		{
+ 			name:        "nil response",
+ 			response:    nil,

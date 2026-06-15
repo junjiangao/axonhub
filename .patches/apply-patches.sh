@@ -13,6 +13,7 @@ PATCHES=(
   "001-local-config.patch"
   "002-bugfixes.patch"
   "003-testdata.patch"
+  "004-synthesize-stream-finish-reason.patch"
 )
 
 echo ">>> 应用本地补丁到 $(git branch --show-current)..."
