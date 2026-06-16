@@ -1,0 +1,37 @@
+diff --git a/Dockerfile b/Dockerfile
+index 4cebbcc5..aac59d85 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -18,13 +18,14 @@ FROM golang:alpine AS backend-builder
+ 
+ WORKDIR /build
+ 
+-RUN apk add --no-cache git ca-certificates tzdata
++RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/repositories && \
++    apk add --no-cache git ca-certificates tzdata
+ 
+ COPY go.mod go.sum ./
+ COPY llm/go.mod llm/go.sum llm/
+ RUN --mount=type=cache,target=/go/pkg/mod \
+     --mount=type=cache,target=/root/.cache/go-build \
+-    GOTOOLCHAIN=auto go mod download
++    GOTOOLCHAIN=auto GOPROXY=https://goproxy.cn,direct go mod download
+ 
+ COPY . .
+ COPY --from=frontend-dist /dist /build/internal/server/static/dist
+@@ -43,10 +44,12 @@ RUN --mount=type=cache,target=/go/pkg/mod \
+ 
+ FROM alpine
+ 
+-RUN apk add --no-cache ca-certificates tzdata
++RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/repositories && \
++    apk add --no-cache ca-certificates tzdata
+ 
+ WORKDIR /app
+ COPY --from=backend-builder /build/axonhub /app/axonhub
+ 
+ EXPOSE 8090
+-ENTRYPOINT ["/app/axonhub"]
+\ No newline at end of file
++ENTRYPOINT ["/app/axonhub"]
++

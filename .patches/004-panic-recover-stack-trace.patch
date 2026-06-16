@@ -1,0 +1,69 @@
+diff --git a/internal/server/orchestrator/pass_through.go b/internal/server/orchestrator/pass_through.go
+index 1cc66780..d89f30a6 100644
+--- a/internal/server/orchestrator/pass_through.go
++++ b/internal/server/orchestrator/pass_through.go
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 	"fmt"
+ 	"net/http"
++	"runtime/debug"
+ 	"sync"
+ 
+ 	"github.com/tidwall/sjson"
+@@ -280,10 +281,17 @@ func captureRawProviderStream(outbound *PersistentOutboundTransformer, systemSer
+ 		go func() {
+ 			defer func() {
+ 				if r := recover(); r != nil {
+-					log.Warn(ctx, "captureRawProviderStream goroutine panicked, recovering",
++					fields := []log.Field{
+ 						log.Any("panic", r),
+-						log.String("channel", channel.Name),
+-					)
++						log.String("stack", string(debug.Stack())),
++					}
++					if channel != nil {
++						fields = append(fields,
++							log.String("channel", channel.Name),
++							log.Int("channel_id", channel.ID),
++						)
++					}
++					log.Warn(ctx, "captureRawProviderStream goroutine panicked, recovering", fields...)
+ 					rawStreamErr = fmt.Errorf("passthrough stream panic: %v", r)
+ 				} else {
+ 					rawStreamErr = stream.Err()
+
+diff --git a/llm/httpclient/decoder.go b/llm/httpclient/decoder.go
+index e709e901..8286f63e 100644
+--- a/llm/httpclient/decoder.go
++++ b/llm/httpclient/decoder.go
+@@ -4,8 +4,10 @@ import (
+ 	"bytes"
+ 	"context"
+ 	"errors"
++	"fmt"
+ 	"io"
+ 	"log/slog"
++	"runtime/debug"
+ 	"sync"
+ 	"sync/atomic"
+ 
+@@ -134,7 +136,18 @@ func (s *defaultSSEDecoder) Next() bool {
+ 	default:
+ 	}
+ 
+-	event, err := s.sseStream.Recv()
++	event, err := func() (ev sse.Event, err error) {
++		defer func() {
++			if r := recover(); r != nil {
++				slog.ErrorContext(s.ctx, "SSE decoder panicked in Recv",
++					slog.Any("panic", r),
++					slog.String("stack", string(debug.Stack())),
++				)
++				err = fmt.Errorf("sse decoder panic: %v", r)
++			}
++		}()
++		return s.sseStream.Recv()
++	}()
+ 	if err != nil {
+ 		if errors.Is(err, io.EOF) {
+ 			slog.DebugContext(s.ctx, "SSE stream closed")

@@ -1,0 +1,19 @@
+diff --git a/llm/transformer/anthropic/inbound_stream.go b/llm/transformer/anthropic/inbound_stream.go
+index 0fa41c43..ea252bbe 100644
+--- a/llm/transformer/anthropic/inbound_stream.go
++++ b/llm/transformer/anthropic/inbound_stream.go
+@@ -734,11 +734,9 @@ func (s *anthropicInboundStream) Next() bool {
+ 			}
+ 
+ 			// Close any open tool_use block before starting a tool_result.
+-			if s.hasToolContentStarted {
+-				if err := s.closeToolBlock(); err != nil {
+-					s.err = fmt.Errorf("failed to close tool block before tool_result: %w", err)
+-					return false
+-				}
++			if err := s.closeToolBlock(); err != nil {
++				s.err = fmt.Errorf("failed to close tool block before tool_result: %w", err)
++				return false
+ 			}
+ 
+ 			// Close any open text block before starting a tool_result.

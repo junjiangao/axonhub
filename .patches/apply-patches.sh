@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# apply-patches.sh — 在同步上游后，将本地补丁重新应用到 main
+# apply-patches.sh — 在同步上游后，将本地补丁重新应用到工作分支
 #
-# 用法: 在 main 分支上执行
+# 用法: 在工作分支上执行
 #   bash .patches/apply-patches.sh
 #
 set -euo pipefail
@@ -10,10 +10,13 @@ set -euo pipefail
 PATCHES_DIR="$(cd "$(dirname "$0")" && pwd)"
 PATCHES=(
   "000-gitignore.patch"
-  "001-local-config.patch"
-  "002-bugfixes.patch"
-  "003-testdata.patch"
-  "004-synthesize-stream-finish-reason.patch"
+  "001-dockerfile-mirror.patch"
+  "002-docker-compose-local-build.patch"
+  "003-version-bump.patch"
+  "004-panic-recover-stack-trace.patch"
+  "005-finishreason-empty-string-compat.patch"
+  "006-anthropic-close-tool-block-fix.patch"
+  "007-openai-inbound-stream-finish-reason.patch"
 )
 
 echo ">>> 应用本地补丁到 $(git branch --show-current)..."

@@ -1,0 +1,41 @@
+diff --git a/docker-compose.yml b/docker-compose.yml
+index 71c2d235..e542e6c6 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -16,10 +16,17 @@ services:
+   postgres:
+     image: postgres:16-alpine
+     container_name: axonhub-postgres
++    command:
++      - postgres
++      - -c
++      - timezone=Asia/Shanghai
++      - -c
++      - log_timezone=Asia/Shanghai
+     environment:
+       POSTGRES_DB: axonhub
+       POSTGRES_USER: axonhub
+       POSTGRES_PASSWORD: ${DB_PASSWORD:-axonhub_password}
++      TZ: Asia/Shanghai
+     volumes:
+       - postgres_data:/var/lib/postgresql/data
+     ports:
+@@ -35,12 +42,17 @@ services:
+ 
+   # AxonHub 主服务
+   axonhub:
+-    image: looplj/axonhub:latest
++    build:
++      context: .
++      dockerfile: Dockerfile
++      network: host
++    image: axonhub:local
+     container_name: axonhub-app
+     environment:
+       # 数据库配置可以通过环境变量设置，优先级高于配置文件
+       AXONHUB_DB_DIALECT: postgres
+       AXONHUB_DB_DSN: postgres://axonhub:${DB_PASSWORD:-axonhub_password}@postgres:5432/axonhub?sslmode=disable
++      TZ: Asia/Shanghai
+     ports:
+       - "8090:8090"
+     volumes:

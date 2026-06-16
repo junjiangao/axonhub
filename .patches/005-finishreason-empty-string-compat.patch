@@ -1,0 +1,41 @@
+diff --git a/llm/pipeline/stream.go b/llm/pipeline/stream.go
+index 46e2b13b..5d496800 100644
+--- a/llm/pipeline/stream.go
++++ b/llm/pipeline/stream.go
+@@ -138,7 +138,7 @@ func hasFinishReason(resp *llm.Response) bool {
+ 	}
+ 
+ 	for _, choice := range resp.Choices {
+-		if choice.FinishReason != nil {
++		if choice.FinishReason != nil && *choice.FinishReason != "" {
+ 			return true
+ 		}
+ 	}
+
+diff --git a/llm/transformer/aisdk/convert_stream.go b/llm/transformer/aisdk/convert_stream.go
+index 6146ec00..bd668258 100644
+--- a/llm/transformer/aisdk/convert_stream.go
++++ b/llm/transformer/aisdk/convert_stream.go
+@@ -297,7 +297,7 @@ func (s *aiSDKConvertStream) Next() bool {
+ 		}
+ 
+ 		// Handle finish reason
+-		if choice.FinishReason != nil && !s.hasFinished {
++		if choice.FinishReason != nil && *choice.FinishReason != "" && !s.hasFinished {
+ 			s.hasFinished = true
+ 
+ 			// End any active content blocks
+
+diff --git a/llm/transformer/anthropic/inbound_convert.go b/llm/transformer/anthropic/inbound_convert.go
+index 7e3bc8f5..a27f3855 100644
+--- a/llm/transformer/anthropic/inbound_convert.go
++++ b/llm/transformer/anthropic/inbound_convert.go
+@@ -676,7 +676,7 @@ func convertToAnthropicResponse(chatResp *llm.Response) *Message {
+ 		}
+ 
+ 		// Convert finish reason
+-		if choice.FinishReason != nil {
++		if choice.FinishReason != nil && *choice.FinishReason != "" {
+ 			switch *choice.FinishReason {
+ 			case "stop":
+ 				stopReason := "end_turn"
