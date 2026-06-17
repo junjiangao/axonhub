@@ -9,18 +9,31 @@ set -euo pipefail
 
 PATCHES_DIR="$(cd "$(dirname "$0")" && pwd)"
 PATCHES=(
-  "000-gitignore.patch"
-  "001-dockerfile-mirror.patch"
-  "002-docker-compose-local-build.patch"
-  "003-version-bump.patch"
-  "004-panic-recover-stack-trace.patch"
-  "005-finishreason-empty-string-compat.patch"
-  "006-anthropic-close-tool-block-fix.patch"
-  "007-openai-inbound-stream-finish-reason.patch"
+  "000-panic-recover-stack-trace.patch"
+  "001-finishreason-empty-string-compat.patch"
+  "002-anthropic-close-tool-block-fix.patch"
+  "003-openai-inbound-stream-finish-reason.patch"
+  "004-dockerfile-mirror.patch"
+  "005-docker-compose-local-build.patch"
+  "006-version-bump.patch"
+  "007-gitignore.patch"
 )
 
 echo ">>> 应用本地补丁到 $(git branch --show-current)..."
 echo
+
+# 预检查：确保所有声明的补丁文件都存在
+MISSING=0
+for PATCH in "${PATCHES[@]}"; do
+  if [ ! -f "$PATCHES_DIR/$PATCH" ]; then
+    echo "  [✗] 缺失: $PATCH"
+    MISSING=$((MISSING + 1))
+  fi
+done
+if [ "$MISSING" -gt 0 ]; then
+  echo "  [!] 有 $MISSING 个补丁文件缺失，请检查 .patches/ 目录"
+  exit 1
+fi
 
 for PATCH in "${PATCHES[@]}"; do
   PATCH_FILE="$PATCHES_DIR/$PATCH"
@@ -35,7 +48,7 @@ for PATCH in "${PATCHES[@]}"; do
     git apply "$PATCH_FILE"
     echo "  [✓] 成功"
   else
-    echo "  [!] 冲突，尝试三次合并..."
+    echo "  [!] 冲突，尝试 --reject 强制应用..."
     if git apply --reject "$PATCH_FILE" 2>/dev/null; then
       echo "  [~] 部分应用，请检查 .rej 文件并手动修复"
     else
