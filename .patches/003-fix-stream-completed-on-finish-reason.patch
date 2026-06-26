@@ -1,0 +1,82 @@
+From e6fbc555a46c49ca18e3886b73a46751afa9954a Mon Sep 17 00:00:00 2001
+From: junjiangao <junjiangao@gmail.com>
+Date: Thu, 2 Jul 2026 19:00:31 +0800
+Subject: [PATCH] fix: stream completion detection without usage chunk
+
+When streaming response is interrupted by client disconnect before
+the [DONE] event is consumed, the aggregation fallback in Close()
+relies on isCompletedAggregated() to detect a complete response.
+Previously it only checked meta.Completed and
+meta.Usage.CompletionTokens > 0.  Providers like glm-5.2 send
+finish_reason in a content chunk and usage in a separate trailing
+chunk; if the client disconnects between them, the usage chunk is
+never collected and the fallback fails, marking the request as
+Canceled despite all content being delivered.
+
+Add HasFinishReason to ResponseMeta and set it in
+AggregateStreamChunks when any aggregated choice has a non-empty
+finish_reason.  isCompletedAggregated now also checks this field,
+covering the gap.
+---
+ internal/server/orchestrator/outbound.go |  1 +
+ llm/model.go                             |  7 ++++---
+ llm/transformer/openai/aggregator.go     | 13 +++++++++++--
+ 3 files changed, 16 insertions(+), 5 deletions(-)
+
+diff --git a/internal/server/orchestrator/outbound.go b/internal/server/orchestrator/outbound.go
+index 5adaa134..3bd4ab73 100644
+--- a/internal/server/orchestrator/outbound.go
++++ b/internal/server/orchestrator/outbound.go
+@@ -306,6 +306,7 @@ func (ts *OutboundPersistentStream) persistAggregatedResponse(ctx context.Contex
+ 
+ func isCompletedAggregated(meta llm.ResponseMeta) bool {
+ 	return meta.Completed ||
++		meta.HasFinishReason ||
+ 		(meta.Usage != nil && meta.Usage.CompletionTokens > 0)
+ }
+ 
+diff --git a/llm/model.go b/llm/model.go
+index d92e92be..4b636bc7 100644
+--- a/llm/model.go
++++ b/llm/model.go
+@@ -755,9 +755,10 @@ type TopLogprob struct {
+ }
+ 
+ type ResponseMeta struct {
+-	ID        string `json:"id"`
+-	Usage     *Usage `json:"usage"`
+-	Completed bool   `json:"completed,omitempty"`
++	ID              string `json:"id"`
++	Usage           *Usage `json:"usage"`
++	Completed       bool   `json:"completed,omitempty"`
++	HasFinishReason bool   `json:"-"`
+ }
+ 
+ // Usage Represents the total token usage per request to OpenAI.
+diff --git a/llm/transformer/openai/aggregator.go b/llm/transformer/openai/aggregator.go
+index 11283fe4..b0b62f6d 100644
+--- a/llm/transformer/openai/aggregator.go
++++ b/llm/transformer/openai/aggregator.go
+@@ -381,8 +381,17 @@ func AggregateStreamChunks(ctx context.Context, chunks []*httpclient.StreamEvent
+ 		return nil, llm.ResponseMeta{}, err
+ 	}
+ 
++	hasFinishReason := false
++	for _, c := range choices {
++		if c.FinishReason != nil && *c.FinishReason != "" {
++			hasFinishReason = true
++			break
++		}
++	}
++
+ 	return data, llm.ResponseMeta{
+-		ID:    response.ID,
+-		Usage: responseUsage,
++		ID:              response.ID,
++		Usage:           responseUsage,
++		HasFinishReason: hasFinishReason,
+ 	}, nil
+ }
+-- 
+2.50.1
+
