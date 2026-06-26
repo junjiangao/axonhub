@@ -1,8 +1,8 @@
 diff --git a/Dockerfile b/Dockerfile
-index 4cebbcc5..aac59d85 100644
+index 4cebbcc..a046490 100644
 --- a/Dockerfile
 +++ b/Dockerfile
-@@ -18,13 +18,14 @@ FROM golang:alpine AS backend-builder
+@@ -18,20 +18,22 @@ FROM golang:alpine AS backend-builder
  
  WORKDIR /build
  
@@ -19,7 +19,16 @@ index 4cebbcc5..aac59d85 100644
  
  COPY . .
  COPY --from=frontend-dist /dist /build/internal/server/static/dist
-@@ -43,10 +44,12 @@ RUN --mount=type=cache,target=/go/pkg/mod \
+ 
+ ENV GO111MODULE=on \
+     CGO_ENABLED=0 \
+-    GOOS=linux
++    GOOS=linux \
++    GOPROXY=https://goproxy.cn,direct
+ 
+ RUN --mount=type=cache,target=/go/pkg/mod \
+     --mount=type=cache,target=/root/.cache/go-build \
+@@ -43,10 +45,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
  
  FROM alpine
  
@@ -34,4 +43,3 @@ index 4cebbcc5..aac59d85 100644
 -ENTRYPOINT ["/app/axonhub"]
 \ No newline at end of file
 +ENTRYPOINT ["/app/axonhub"]
-+
