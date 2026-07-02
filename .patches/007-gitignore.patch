@@ -1,9 +1,0 @@
-diff --git a/.gitignore b/.gitignore
-index 90c11378..2eaeef72 100755
---- a/.gitignore
-+++ b/.gitignore
-@@ -167,3 +167,4 @@ config.schema.json
- .omc/
- .playwright-mcp/
- .ace-tool/
-+*.rej

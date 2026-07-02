@@ -13,10 +13,7 @@ PATCHES=(
   "001-finishreason-empty-string-compat.patch"
   "002-openai-inbound-stream-finish-reason.patch"
   "003-fix-stream-completed-on-finish-reason.patch"
-  "004-dockerfile-mirror.patch"
-  "005-docker-compose-local-build.patch"
-  "006-version-bump.patch"
-  "007-gitignore.patch"
+  "004-local-changes.patch"
 )
 
 echo ">>> 应用本地补丁到 $(git branch --show-current)..."

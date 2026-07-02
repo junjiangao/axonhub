@@ -1,7 +1,0 @@
-diff --git a/internal/build/VERSION b/internal/build/VERSION
-index 6779af67..d9a99de0 100644
---- a/internal/build/VERSION
-+++ b/internal/build/VERSION
-@@ -1 +1 @@
--v0.9.38
-+v0.9.43
