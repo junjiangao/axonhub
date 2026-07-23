@@ -84,13 +84,6 @@ index 71c2d235..e542e6c6 100644
      ports:
        - "8090:8090"
      volumes:
-diff --git a/internal/build/VERSION b/internal/build/VERSION
-index 6779af67..d9a99de0 100644
---- a/internal/build/VERSION
-+++ b/internal/build/VERSION
-@@ -1 +1 @@
--v0.9.38
-+v0.9.43
 diff --git a/.gitignore b/.gitignore
 index 90c11378..2eaeef72 100755
 --- a/.gitignore
