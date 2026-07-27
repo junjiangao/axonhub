@@ -1,8 +1,17 @@
 diff --git a/Dockerfile b/Dockerfile
-index 4cebbcc..a046490 100644
+index 4cebbcc..d94af7d 100644
 --- a/Dockerfile
 +++ b/Dockerfile
-@@ -18,20 +18,22 @@ FROM golang:alpine AS backend-builder
+@@ -1,6 +1,8 @@
+ FROM --platform=$BUILDPLATFORM node:20-alpine AS frontend-builder
+ 
+ WORKDIR /build
++ENV COREPACK_NPM_REGISTRY=https://registry.npmmirror.com \
++    npm_config_registry=https://registry.npmmirror.com
+ RUN corepack enable && corepack prepare pnpm@10 --activate
+ COPY frontend/package.json frontend/pnpm-lock.yaml ./
+ RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+@@ -18,20 +20,22 @@ FROM golang:alpine AS backend-builder
  
  WORKDIR /build
  
@@ -28,7 +37,7 @@ index 4cebbcc..a046490 100644
  
  RUN --mount=type=cache,target=/go/pkg/mod \
      --mount=type=cache,target=/root/.cache/go-build \
-@@ -43,10 +45,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
+@@ -43,10 +47,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
  
  FROM alpine
  
@@ -44,7 +53,7 @@ index 4cebbcc..a046490 100644
 \ No newline at end of file
 +ENTRYPOINT ["/app/axonhub"]
 diff --git a/docker-compose.yml b/docker-compose.yml
-index 71c2d235..e542e6c6 100644
+index 71c2d23..e542e6c 100644
 --- a/docker-compose.yml
 +++ b/docker-compose.yml
 @@ -16,10 +16,17 @@ services:
@@ -85,7 +94,7 @@ index 71c2d235..e542e6c6 100644
        - "8090:8090"
      volumes:
 diff --git a/.gitignore b/.gitignore
-index 90c11378..2eaeef72 100755
+index 90c1137..2eaeef7 100644
 --- a/.gitignore
 +++ b/.gitignore
 @@ -167,3 +167,4 @@ config.schema.json
