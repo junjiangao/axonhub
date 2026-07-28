@@ -1,5 +1,5 @@
 diff --git a/llm/transformer/openai/inbound.go b/llm/transformer/openai/inbound.go
-index 6112fddf..ba719ed6 100644
+index 6112fddf..da2d5e7b 100644
 --- a/llm/transformer/openai/inbound.go
 +++ b/llm/transformer/openai/inbound.go
 @@ -13,6 +13,7 @@ import (
@@ -35,7 +35,7 @@ index 6112fddf..ba719ed6 100644
  	// Convert to OpenAI Response format
  	oaiResp := ResponseFromLLM(chatResp)
  
-@@ -145,6 +151,117 @@ func (t *InboundTransformer) TransformStreamChunk(
+@@ -145,6 +151,92 @@ func (t *InboundTransformer) TransformStreamChunk(
  	}, nil
  }
  
@@ -50,7 +50,8 @@ index 6112fddf..ba719ed6 100644
 +
 +	// hasSeenToolCalls tracks whether any prior chunk contained tool calls,
 +	// used to infer the correct finish_reason for usage-only terminal chunks.
-+	hasSeenToolCalls bool
++	hasSeenToolCalls    bool
++	hasSeenFinishReason bool
 +
 +	current *httpclient.StreamEvent
 +	err     error
@@ -60,7 +61,7 @@ index 6112fddf..ba719ed6 100644
 +	for s.source.Next() {
 +		chunk := s.source.Current()
 +		// Synthesize finish_reason before transforming the chunk.
-+		ensureStreamFinishReason(chunk, &s.hasSeenToolCalls)
++		ensureStreamFinishReason(chunk, &s.hasSeenToolCalls, &s.hasSeenFinishReason)
 +		event, err := s.t.TransformStreamChunk(s.ctx, chunk)
 +		if err != nil {
 +			s.err = err
@@ -90,54 +91,27 @@ index 6112fddf..ba719ed6 100644
 +	return s.source.Close()
 +}
 +
-+// ensureStreamFinishReason synthesizes finish_reason for stream chunks when the
-+// upstream provider omits it. hasSeenToolCalls tracks whether prior chunks
-+// contained tool calls, used to infer finish_reason for terminal usage-only chunks.
-+//
-+// Two cases:
-+//  1. A chunk with a new tool call (delta.tool_calls[*].id != "") but no
-+//     finish_reason → set "tool_calls". Only the first chunk of each tool call
-+//     receives finish_reason; subsequent argument-only chunks leave it nil,
-+//     matching the OpenAI streaming pattern where intermediate chunks have
-+//     finish_reason=null.
-+//  2. A terminal usage-only chunk (empty choices + usage) with no finish_reason
-+//     in any choice → inject a synthetic choice. If prior chunks contained tool
-+//     calls, finish_reason is "tool_calls"; otherwise "stop". This follows the
-+//     OpenAI SSE pattern where the final chunk carries both finish_reason and
-+//     usage metadata.
-+func ensureStreamFinishReason(resp *llm.Response, hasSeenToolCalls *bool) {
-+	hasFinishReason := false
++// ensureStreamFinishReason synthesizes finish_reason only for a terminal
++// usage-only chunk. Regular content and tool-call chunks remain non-terminal.
++// hasSeenToolCalls determines whether the terminal reason is "tool_calls" or
++// "stop" when the upstream provider omits finish_reason.
++func ensureStreamFinishReason(resp *llm.Response, hasSeenToolCalls, hasSeenFinishReason *bool) {
++	if resp == nil {
++		return
++	}
 +
 +	for i := range resp.Choices {
 +		c := &resp.Choices[i]
 +		if c.FinishReason != nil && *c.FinishReason != "" {
-+			hasFinishReason = true
-+			continue
++			*hasSeenFinishReason = true
 +		}
 +		if c.Delta == nil || len(c.Delta.ToolCalls) == 0 {
 +			continue
 +		}
-+		// Only synthesize finish_reason on the first chunk of a tool call
-+		// (id != ""), not on subsequent argument-only chunks.
-+		hasNewToolCall := false
-+		for _, tc := range c.Delta.ToolCalls {
-+			if tc.ID != "" {
-+				hasNewToolCall = true
-+				break
-+			}
-+		}
-+		if hasNewToolCall {
-+			c.FinishReason = lo.ToPtr("tool_calls")
-+			hasFinishReason = true
-+		}
 +		*hasSeenToolCalls = true
 +	}
 +
-+	// Terminal usage-only chunk: inject a synthetic choice so the client
-+	// sees a finish_reason before [DONE]. If we've seen tool calls in prior
-+	// chunks but none got a synthesized finish_reason (provider never sets
-+	// it), the correct reason is "tool_calls" rather than "stop".
-+	if !hasFinishReason && len(resp.Choices) == 0 && resp.Usage != nil {
++	if !*hasSeenFinishReason && len(resp.Choices) == 0 && resp.Usage != nil {
 +		reason := "stop"
 +		if *hasSeenToolCalls {
 +			reason = "tool_calls"
@@ -147,6 +121,7 @@ index 6112fddf..ba719ed6 100644
 +			Delta:        &llm.Message{},
 +			FinishReason: lo.ToPtr(reason),
 +		})
++		*hasSeenFinishReason = true
 +	}
 +}
 +
@@ -154,10 +129,10 @@ index 6112fddf..ba719ed6 100644
  // This is a helper function to filter out reasoning signature events when transforming
  // to OpenAI format, since OpenAI format doesn't support ReasoningSignature in streaming.
 diff --git a/llm/transformer/openai/inbound_test.go b/llm/transformer/openai/inbound_test.go
-index bfe4f00a..01411536 100644
+index ce4ac7fd..a24b2b89 100644
 --- a/llm/transformer/openai/inbound_test.go
 +++ b/llm/transformer/openai/inbound_test.go
-@@ -415,6 +415,7 @@ func TestInboundTransformer_TransformStreamChunk(t *testing.T) {
+@@ -469,6 +469,7 @@ func TestInboundTransformer_TransformStreamChunk(t *testing.T) {
  					*chatResp.Choices[0].FinishReason == "tool_calls"
  			},
  		},
@@ -165,7 +140,7 @@ index bfe4f00a..01411536 100644
  		{
  			name: "empty choices",
  			response: &llm.Response{
-@@ -429,6 +430,7 @@ func TestInboundTransformer_TransformStreamChunk(t *testing.T) {
+@@ -483,6 +484,7 @@ func TestInboundTransformer_TransformStreamChunk(t *testing.T) {
  				return event.Type == ""
  			},
  		},
@@ -173,91 +148,14 @@ index bfe4f00a..01411536 100644
  		{
  			name:        "nil response",
  			response:    nil,
-@@ -475,6 +477,197 @@ func TestInboundTransformer_TransformStreamChunk(t *testing.T) {
+@@ -529,6 +531,140 @@ func TestInboundTransformer_TransformStreamChunk(t *testing.T) {
  	}
  }
  
 +func TestInboundTransformer_TransformStream_SynthesizesFinishReason(t *testing.T) {
 +	transformer := NewInboundTransformer()
 +
-+	t.Run("tool_calls first chunk gets finish_reason, argument chunks do not", func(t *testing.T) {
-+		stream, err := transformer.TransformStream(t.Context(), streams.SliceStream([]*llm.Response{
-+			{
-+				ID:      "chatcmpl-123",
-+				Object:  "chat.completion.chunk",
-+				Created: 1677652288,
-+				Model:   "gpt-4",
-+				Choices: []llm.Choice{
-+					{
-+						Index: 0,
-+						Delta: &llm.Message{
-+							Role: "assistant",
-+							ToolCalls: []llm.ToolCall{
-+								{
-+									ID:   "call_123",
-+									Type: "function",
-+									Function: llm.FunctionCall{
-+										Name: "get_user_city",
-+									},
-+									Index: 0,
-+								},
-+							},
-+						},
-+					},
-+				},
-+			},
-+			{
-+				ID:      "chatcmpl-123",
-+				Object:  "chat.completion.chunk",
-+				Created: 1677652289,
-+				Model:   "gpt-4",
-+				Choices: []llm.Choice{
-+					{
-+						Index: 0,
-+						Delta: &llm.Message{
-+							Role: "assistant",
-+							ToolCalls: []llm.ToolCall{
-+								{
-+									// No ID: this is an argument-only chunk
-+									Function: llm.FunctionCall{
-+										Arguments: `{"user_id":"123"}`,
-+									},
-+									Index: 0,
-+								},
-+							},
-+						},
-+					},
-+				},
-+			},
-+			{
-+				Object: "[DONE]",
-+			},
-+		}))
-+		require.NoError(t, err)
-+
-+		var events []*httpclient.StreamEvent
-+		for stream.Next() {
-+			events = append(events, stream.Current())
-+		}
-+		require.NoError(t, stream.Err())
-+		require.Len(t, events, 3) // 2 data chunks + [DONE]
-+
-+		// First chunk: tool call with ID should get synthesized finish_reason
-+		var first llm.Response
-+		require.NoError(t, json.Unmarshal(events[0].Data, &first))
-+		require.NotNil(t, first.Choices[0].FinishReason)
-+		require.Equal(t, "tool_calls", *first.Choices[0].FinishReason)
-+
-+		// Second chunk: argument-only, should NOT get finish_reason
-+		var second llm.Response
-+		require.NoError(t, json.Unmarshal(events[1].Data, &second))
-+		require.Nil(t, second.Choices[0].FinishReason)
-+
-+		// Third chunk: [DONE]
-+		require.Equal(t, "[DONE]", string(events[2].Data))
-+	})
-+
-+	t.Run("usage-only chunk after tool calls gets tool_calls as finish_reason", func(t *testing.T) {
++	t.Run("tool call chunk stays non-terminal and usage-only chunk gets tool_calls", func(t *testing.T) {
 +		stream, err := transformer.TransformStream(t.Context(), streams.SliceStream([]*llm.Response{
 +			{
 +				ID:      "chatcmpl-123",
@@ -308,7 +206,11 @@ index bfe4f00a..01411536 100644
 +		require.NoError(t, stream.Err())
 +		require.Len(t, events, 3) // tool call chunk + usage chunk + [DONE]
 +
-+		// Usage-only chunk (events[1]) should get "tool_calls" because we saw tool calls earlier
++		var toolCallChunk llm.Response
++		require.NoError(t, json.Unmarshal(events[0].Data, &toolCallChunk))
++		require.Nil(t, toolCallChunk.Choices[0].FinishReason)
++
++		// Usage-only chunk gets the terminal reason after all tool-call data.
 +		var usageChunk llm.Response
 +		require.NoError(t, json.Unmarshal(events[1].Data, &usageChunk))
 +		require.Len(t, usageChunk.Choices, 1)
@@ -366,6 +268,22 @@ index bfe4f00a..01411536 100644
 +		require.Len(t, usageChunk.Choices, 1)
 +		require.NotNil(t, usageChunk.Choices[0].FinishReason)
 +		require.Equal(t, "stop", *usageChunk.Choices[0].FinishReason)
++	})
++
++	t.Run("usage-only chunk stays unchanged after upstream finish_reason", func(t *testing.T) {
++		hasSeenToolCalls := false
++		hasSeenFinishReason := false
++		ensureStreamFinishReason(&llm.Response{
++			Choices: []llm.Choice{{FinishReason: lo.ToPtr("stop")}},
++		}, &hasSeenToolCalls, &hasSeenFinishReason)
++
++		usageChunk := &llm.Response{
++			Choices: []llm.Choice{},
++			Usage:   &llm.Usage{TotalTokens: 30},
++		}
++		ensureStreamFinishReason(usageChunk, &hasSeenToolCalls, &hasSeenFinishReason)
++
++		require.Empty(t, usageChunk.Choices)
 +	})
 +}
  func TestInboundTransformer_TransformStream_SkipsPureReasoningSignatureChunk(t *testing.T) {
