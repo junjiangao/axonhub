@@ -93,12 +93,3 @@ index 71c2d23..e542e6c 100644
      ports:
        - "8090:8090"
      volumes:
-diff --git a/.gitignore b/.gitignore
-index 90c1137..2eaeef7 100644
---- a/.gitignore
-+++ b/.gitignore
-@@ -167,3 +167,4 @@ config.schema.json
- .omc/
- .playwright-mcp/
- .ace-tool/
-+*.rej
