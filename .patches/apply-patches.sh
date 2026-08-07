@@ -12,6 +12,7 @@ PATCHES=(
   "000-panic-recover-stack-trace.patch"
   "002-openai-inbound-stream-finish-reason.patch"
   "004-local-changes.patch"
+  "005-request-log-cache-hit-rate.patch"
 )
 
 echo ">>> 应用本地补丁到 $(git branch --show-current)..."

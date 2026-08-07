@@ -1,0 +1,81 @@
+diff --git a/frontend/src/features/requests/components/requests-columns.tsx b/frontend/src/features/requests/components/requests-columns.tsx
+index ad9e3944..ab3bdf12 100644
+--- a/frontend/src/features/requests/components/requests-columns.tsx
++++ b/frontend/src/features/requests/components/requests-columns.tsx
+@@ -308,7 +308,17 @@ export function useRequestsColumns(options?: UseRequestsColumnsOptions): ColumnD
+         const completionTokens = usageLog.completionTokens ?? 0;
+         const readCacheTokens = usageLog.promptCachedTokens ?? 0;
+         const writeCacheTokens = usageLog.promptWriteCachedTokens ?? 0;
+-        const hasCache = readCacheTokens > 0 || writeCacheTokens > 0;
++        const hasReadCache = readCacheTokens > 0;
++        const hasWriteCache = writeCacheTokens > 0;
++        const hasCache = hasReadCache || hasWriteCache;
++        const cacheHitRate = hasReadCache && promptTokens > 0 ? ((readCacheTokens / promptTokens) * 100).toFixed(1) : '0.0';
++        const writeCacheRate = hasWriteCache && promptTokens > 0 ? ((writeCacheTokens / promptTokens) * 100).toFixed(1) : '0.0';
++        const cacheDetail = [
++          hasReadCache ? `${t('requests.columns.readCache')} ${readCacheTokens.toLocaleString()}` : '',
++          hasWriteCache ? `${t('requests.columns.writeCache')} ${writeCacheTokens.toLocaleString()}` : '',
++        ]
++          .filter(Boolean)
++          .join(' · ');
+ 
+         return (
+           <div className='min-w-[170px] space-y-1 text-xs'>
+@@ -333,9 +343,28 @@ export function useRequestsColumns(options?: UseRequestsColumnsOptions): ColumnD
+               </Tooltip>
+             </div>
+             <div className='text-muted-foreground whitespace-nowrap'>
+-              {hasCache
+-                ? `${t('requests.columns.cache')} ${readCacheTokens.toLocaleString()} (${t('requests.columns.read')})  ${writeCacheTokens.toLocaleString()} (${t('requests.columns.write')})`
+-                : `${t('requests.columns.cache')} -`}
++              {hasCache ? (
++                <Tooltip>
++                  <TooltipTrigger asChild>
++                    <span className='inline-flex items-center gap-1' tabIndex={0} role='img' aria-label={cacheDetail}>
++                      <span>{t('requests.columns.cache')}</span>
++                      {hasReadCache && (
++                        <Badge variant='outline' className='h-4 border-green-200 bg-green-50 px-1 text-[10px] text-green-600'>
++                          {t('requests.columns.cacheHitRate', { rate: cacheHitRate })}
++                        </Badge>
++                      )}
++                      {hasWriteCache && (
++                        <Badge variant='outline' className='h-4 border-blue-200 bg-blue-50 px-1 text-[10px] text-blue-600'>
++                          {t('requests.columns.writeCacheRate', { rate: writeCacheRate })}
++                        </Badge>
++                      )}
++                    </span>
++                  </TooltipTrigger>
++                  <TooltipContent>{cacheDetail}</TooltipContent>
++                </Tooltip>
++              ) : (
++                `${t('requests.columns.cache')} -`
++              )}
+             </div>
+           </div>
+         );
+diff --git a/frontend/src/locales/en/requests.json b/frontend/src/locales/en/requests.json
+index 63cc479a..fa537dfe 100644
+--- a/frontend/src/locales/en/requests.json
++++ b/frontend/src/locales/en/requests.json
+@@ -8,8 +8,6 @@
+   "requests.columns.duration": "Duration",
+   "requests.columns.caller": "Caller",
+   "requests.columns.cache": "Cache",
+-  "requests.columns.read": "read",
+-  "requests.columns.write": "write",
+   "requests.columns.apiFormat": "API Format",
+   "requests.columns.passThrough": "Pass-through",
+   "requests.columns.reasoningEffort": "Reasoning Effort",
+diff --git a/frontend/src/locales/zh-CN/requests.json b/frontend/src/locales/zh-CN/requests.json
+index 959f44c9..5f8c9e2c 100644
+--- a/frontend/src/locales/zh-CN/requests.json
++++ b/frontend/src/locales/zh-CN/requests.json
+@@ -8,8 +8,6 @@
+   "requests.columns.duration": "耗时",
+   "requests.columns.caller": "调用方",
+   "requests.columns.cache": "缓存",
+-  "requests.columns.read": "读",
+-  "requests.columns.write": "写",
+   "requests.columns.apiFormat": "API 格式",
+   "requests.columns.passThrough": "透传",
+   "requests.columns.reasoningEffort": "推理强度",
