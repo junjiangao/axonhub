@@ -1,8 +1,8 @@
 diff --git a/frontend/src/features/requests/components/requests-columns.tsx b/frontend/src/features/requests/components/requests-columns.tsx
-index ad9e3944..ab3bdf12 100644
+index ad9e3944..93a63f75 100644
 --- a/frontend/src/features/requests/components/requests-columns.tsx
 +++ b/frontend/src/features/requests/components/requests-columns.tsx
-@@ -308,7 +308,17 @@ export function useRequestsColumns(options?: UseRequestsColumnsOptions): ColumnD
+@@ -308,7 +308,23 @@ export function useRequestsColumns(options?: UseRequestsColumnsOptions): ColumnD
          const completionTokens = usageLog.completionTokens ?? 0;
          const readCacheTokens = usageLog.promptCachedTokens ?? 0;
          const writeCacheTokens = usageLog.promptWriteCachedTokens ?? 0;
@@ -12,6 +12,12 @@ index ad9e3944..ab3bdf12 100644
 +        const hasCache = hasReadCache || hasWriteCache;
 +        const cacheHitRate = hasReadCache && promptTokens > 0 ? ((readCacheTokens / promptTokens) * 100).toFixed(1) : '0.0';
 +        const writeCacheRate = hasWriteCache && promptTokens > 0 ? ((writeCacheTokens / promptTokens) * 100).toFixed(1) : '0.0';
++        const cacheRateClass =
++          parseFloat(cacheHitRate) >= 95
++            ? 'border-green-200 bg-green-50 text-green-600'
++            : parseFloat(cacheHitRate) >= 50
++              ? 'border-yellow-200 bg-yellow-50 text-yellow-600'
++              : 'border-red-200 bg-red-50 text-red-600';
 +        const cacheDetail = [
 +          hasReadCache ? `${t('requests.columns.readCache')} ${readCacheTokens.toLocaleString()}` : '',
 +          hasWriteCache ? `${t('requests.columns.writeCache')} ${writeCacheTokens.toLocaleString()}` : '',
@@ -21,7 +27,7 @@ index ad9e3944..ab3bdf12 100644
  
          return (
            <div className='min-w-[170px] space-y-1 text-xs'>
-@@ -333,9 +343,28 @@ export function useRequestsColumns(options?: UseRequestsColumnsOptions): ColumnD
+@@ -333,9 +349,28 @@ export function useRequestsColumns(options?: UseRequestsColumnsOptions): ColumnD
                </Tooltip>
              </div>
              <div className='text-muted-foreground whitespace-nowrap'>
@@ -34,7 +40,7 @@ index ad9e3944..ab3bdf12 100644
 +                    <span className='inline-flex items-center gap-1' tabIndex={0} role='img' aria-label={cacheDetail}>
 +                      <span>{t('requests.columns.cache')}</span>
 +                      {hasReadCache && (
-+                        <Badge variant='outline' className='h-4 border-green-200 bg-green-50 px-1 text-[10px] text-green-600'>
++                        <Badge variant='outline' className={`h-4 px-1 text-[10px] ${cacheRateClass}`}>
 +                          {t('requests.columns.cacheHitRate', { rate: cacheHitRate })}
 +                        </Badge>
 +                      )}
