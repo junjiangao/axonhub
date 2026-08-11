@@ -1,66 +1,48 @@
 diff --git a/frontend/src/features/requests/components/requests-columns.tsx b/frontend/src/features/requests/components/requests-columns.tsx
-index ad9e3944..93a63f75 100644
+index 6918e03f..515b5119 100644
 --- a/frontend/src/features/requests/components/requests-columns.tsx
 +++ b/frontend/src/features/requests/components/requests-columns.tsx
-@@ -308,7 +308,23 @@ export function useRequestsColumns(options?: UseRequestsColumnsOptions): ColumnD
-         const completionTokens = usageLog.completionTokens ?? 0;
-         const readCacheTokens = usageLog.promptCachedTokens ?? 0;
-         const writeCacheTokens = usageLog.promptWriteCachedTokens ?? 0;
--        const hasCache = readCacheTokens > 0 || writeCacheTokens > 0;
-+        const hasReadCache = readCacheTokens > 0;
-+        const hasWriteCache = writeCacheTokens > 0;
-+        const hasCache = hasReadCache || hasWriteCache;
-+        const cacheHitRate = hasReadCache && promptTokens > 0 ? ((readCacheTokens / promptTokens) * 100).toFixed(1) : '0.0';
-+        const writeCacheRate = hasWriteCache && promptTokens > 0 ? ((writeCacheTokens / promptTokens) * 100).toFixed(1) : '0.0';
-+        const cacheRateClass =
-+          parseFloat(cacheHitRate) >= 95
+@@ -431,15 +431,22 @@ export function useRequestsColumns(options?: UseRequestsColumnsOptions): ColumnD
+ 
+         const hitRate = promptTokens > 0 ? (cachedTokens / promptTokens) * 100 : 0;
+         const isLowHitRate = hitRate < 80 && promptTokens >= 40000;
++        const cacheRateClass = isLowHitRate
++          ? 'border-red-200 bg-red-50 text-red-600'
++          : hitRate >= 95
 +            ? 'border-green-200 bg-green-50 text-green-600'
-+            : parseFloat(cacheHitRate) >= 50
++            : hitRate >= 50
 +              ? 'border-yellow-200 bg-yellow-50 text-yellow-600'
 +              : 'border-red-200 bg-red-50 text-red-600';
-+        const cacheDetail = [
-+          hasReadCache ? `${t('requests.columns.readCache')} ${readCacheTokens.toLocaleString()}` : '',
-+          hasWriteCache ? `${t('requests.columns.writeCache')} ${writeCacheTokens.toLocaleString()}` : '',
-+        ]
-+          .filter(Boolean)
-+          .join(' · ');
  
          return (
-           <div className='min-w-[170px] space-y-1 text-xs'>
-@@ -333,9 +349,28 @@ export function useRequestsColumns(options?: UseRequestsColumnsOptions): ColumnD
-               </Tooltip>
-             </div>
-             <div className='text-muted-foreground whitespace-nowrap'>
--              {hasCache
--                ? `${t('requests.columns.cache')} ${readCacheTokens.toLocaleString()} (${t('requests.columns.read')})  ${writeCacheTokens.toLocaleString()} (${t('requests.columns.write')})`
--                : `${t('requests.columns.cache')} -`}
-+              {hasCache ? (
-+                <Tooltip>
-+                  <TooltipTrigger asChild>
-+                    <span className='inline-flex items-center gap-1' tabIndex={0} role='img' aria-label={cacheDetail}>
-+                      <span>{t('requests.columns.cache')}</span>
-+                      {hasReadCache && (
-+                        <Badge variant='outline' className={`h-4 px-1 text-[10px] ${cacheRateClass}`}>
-+                          {t('requests.columns.cacheHitRate', { rate: cacheHitRate })}
-+                        </Badge>
-+                      )}
-+                      {hasWriteCache && (
-+                        <Badge variant='outline' className='h-4 border-blue-200 bg-blue-50 px-1 text-[10px] text-blue-600'>
-+                          {t('requests.columns.writeCacheRate', { rate: writeCacheRate })}
-+                        </Badge>
-+                      )}
-+                    </span>
-+                  </TooltipTrigger>
-+                  <TooltipContent>{cacheDetail}</TooltipContent>
-+                </Tooltip>
-+              ) : (
-+                `${t('requests.columns.cache')} -`
-+              )}
-             </div>
+           <div className='text-xs'>
+             <div className='text-sm font-medium'>{cachedTokens.toLocaleString()}</div>
+-            <div className={isLowHitRate ? 'font-medium text-red-600 dark:text-red-400' : 'text-muted-foreground'}>
++            <Badge variant='outline' className={`h-4 px-1 text-[10px] ${cacheRateClass}`}>
+               {t('requests.columns.cacheHitRate', {
+                 rate: hitRate.toFixed(1),
+               })}
+-            </div>
++            </Badge>
            </div>
          );
+       },
+@@ -472,11 +479,11 @@ export function useRequestsColumns(options?: UseRequestsColumnsOptions): ColumnD
+         return (
+           <div className='text-xs'>
+             <div className='text-sm font-medium'>{writeCachedTokens.toLocaleString()}</div>
+-            <div className='text-muted-foreground'>
++            <Badge variant='outline' className='h-4 border-blue-200 bg-blue-50 px-1 text-[10px] text-blue-600'>
+               {t('requests.columns.writeCacheRate', {
+                 rate: promptTokens > 0 ? ((writeCachedTokens / promptTokens) * 100).toFixed(1) : '0.0',
+               })}
+-            </div>
++            </Badge>
+           </div>
+         );
+       },
 diff --git a/frontend/src/locales/en/requests.json b/frontend/src/locales/en/requests.json
-index 63cc479a..fa537dfe 100644
+index 522ae861..ad73dc16 100644
 --- a/frontend/src/locales/en/requests.json
 +++ b/frontend/src/locales/en/requests.json
 @@ -8,8 +8,6 @@
@@ -73,7 +55,7 @@ index 63cc479a..fa537dfe 100644
    "requests.columns.passThrough": "Pass-through",
    "requests.columns.reasoningEffort": "Reasoning Effort",
 diff --git a/frontend/src/locales/zh-CN/requests.json b/frontend/src/locales/zh-CN/requests.json
-index 959f44c9..5f8c9e2c 100644
+index 3d259a2e..fdc171aa 100644
 --- a/frontend/src/locales/zh-CN/requests.json
 +++ b/frontend/src/locales/zh-CN/requests.json
 @@ -8,8 +8,6 @@
