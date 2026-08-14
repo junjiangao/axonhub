@@ -1,5 +1,5 @@
 diff --git a/internal/server/orchestrator/pass_through.go b/internal/server/orchestrator/pass_through.go
-index 1cc66780..d89f30a6 100644
+index 23948d1b..edafdb9e 100644
 --- a/internal/server/orchestrator/pass_through.go
 +++ b/internal/server/orchestrator/pass_through.go
 @@ -4,6 +4,7 @@ import (
@@ -10,7 +10,7 @@ index 1cc66780..d89f30a6 100644
  	"sync"
  
  	"github.com/tidwall/sjson"
-@@ -280,10 +281,17 @@ func captureRawProviderStream(outbound *PersistentOutboundTransformer, systemSer
+@@ -345,10 +346,17 @@ func captureRawProviderStream(outbound *PersistentOutboundTransformer, systemSer
  		go func() {
  			defer func() {
  				if r := recover(); r != nil {
@@ -31,23 +31,19 @@ index 1cc66780..d89f30a6 100644
  					rawStreamErr = fmt.Errorf("passthrough stream panic: %v", r)
  				} else {
  					rawStreamErr = stream.Err()
-
 diff --git a/llm/httpclient/decoder.go b/llm/httpclient/decoder.go
-index e709e901..8286f63e 100644
+index 514d0e57..a0fabce9 100644
 --- a/llm/httpclient/decoder.go
 +++ b/llm/httpclient/decoder.go
-@@ -4,8 +4,10 @@ import (
- 	"bytes"
- 	"context"
- 	"errors"
-+	"fmt"
+@@ -8,6 +8,7 @@ import (
+ 	"fmt"
  	"io"
  	"log/slog"
 +	"runtime/debug"
+ 
  	"sync"
  	"sync/atomic"
- 
-@@ -134,7 +136,18 @@ func (s *defaultSSEDecoder) Next() bool {
+@@ -152,7 +153,18 @@ func (s *defaultSSEDecoder) Next() bool {
  	default:
  	}
  
