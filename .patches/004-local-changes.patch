@@ -1,5 +1,5 @@
 diff --git a/Dockerfile b/Dockerfile
-index 186fe717..370727e7 100644
+index c8298239..34e46a8a 100644
 --- a/Dockerfile
 +++ b/Dockerfile
 @@ -1,6 +1,8 @@
@@ -44,47 +44,56 @@ index 186fe717..370727e7 100644
 -RUN apk add --no-cache ca-certificates tzdata
 +RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/repositories && \
 +    apk add --no-cache ca-certificates tzdata
+ RUN addgroup -S -g 65532 axonhub \
+     && adduser -S -D -H -u 65532 -G axonhub axonhub
  
- WORKDIR /app
- COPY --from=backend-builder /build/axonhub /app/axonhub
 diff --git a/docker-compose.yml b/docker-compose.yml
-index 71c2d235..e542e6c6 100644
+index e79858a8..0909a019 100644
 --- a/docker-compose.yml
 +++ b/docker-compose.yml
-@@ -16,10 +16,17 @@ services:
+@@ -15,15 +15,27 @@
+ # - 必须设置 DB_PASSWORD，不再提供弱默认密码
+ # - 必须显式设置 AXONHUB_IMAGE 和 POSTGRES_IMAGE；生产环境使用不可变 digest
+ # - 默认只绑定到宿主机回环地址；需要公网访问时请显式设置 AXONHUB_BIND_ADDRESS
++#
++# 本地说明：
++# - axonhub 镜像由本地 Dockerfile 构建（不使用远程镜像），镜像名/标签由 AXONHUB_IMAGE 指定
++# - 镜像名、端口、时区等均可在项目根目录 .env 文件中覆盖（.env 已被 .gitignore 忽略）
+ 
+ services:
+   # PostgreSQL 数据库
    postgres:
-     image: postgres:16-alpine
-     container_name: axonhub-postgres
+     image: ${POSTGRES_IMAGE:?POSTGRES_IMAGE must be set (prefer an immutable digest)}
++    container_name: axonhub-postgres
 +    command:
 +      - postgres
 +      - -c
-+      - timezone=Asia/Shanghai
++      - timezone=${TZ:-Asia/Shanghai}
 +      - -c
-+      - log_timezone=Asia/Shanghai
++      - log_timezone=${TZ:-Asia/Shanghai}
      environment:
        POSTGRES_DB: axonhub
        POSTGRES_USER: axonhub
-       POSTGRES_PASSWORD: ${DB_PASSWORD:-axonhub_password}
-+      TZ: Asia/Shanghai
+       POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
++      TZ: ${TZ:-Asia/Shanghai}
      volumes:
        - postgres_data:/var/lib/postgresql/data
-     ports:
-@@ -35,12 +42,17 @@ services:
+     networks:
+@@ -50,11 +62,17 @@ services:
  
    # AxonHub 主服务
    axonhub:
--    image: looplj/axonhub:latest
 +    build:
 +      context: .
 +      dockerfile: Dockerfile
 +      network: host
-+    image: axonhub:local
-     container_name: axonhub-app
+     image: ${AXONHUB_IMAGE:?AXONHUB_IMAGE must be set (prefer an immutable digest)}
++    container_name: axonhub-app
      environment:
        # 数据库配置可以通过环境变量设置，优先级高于配置文件
        AXONHUB_DB_DIALECT: postgres
-       AXONHUB_DB_DSN: postgres://axonhub:${DB_PASSWORD:-axonhub_password}@postgres:5432/axonhub?sslmode=disable
-+      TZ: Asia/Shanghai
+       AXONHUB_DB_DSN: "postgres://axonhub:${DB_PASSWORD:?DB_PASSWORD must be set}@postgres:5432/axonhub?sslmode=disable"
++      TZ: ${TZ:-Asia/Shanghai}
      ports:
-       - "8090:8090"
+       - "${AXONHUB_BIND_ADDRESS:-127.0.0.1}:${AXONHUB_HOST_PORT:-8090}:8090"
      volumes:
