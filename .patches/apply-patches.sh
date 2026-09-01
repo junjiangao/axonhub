@@ -13,6 +13,7 @@ PATCHES=(
   "002-openai-inbound-stream-finish-reason.patch"
   "004-local-changes.patch"
   "005-request-log-cache-hit-rate.patch"
+  "006-pass-through-normalize-finish-reason.patch"
 )
 
 echo ">>> 应用本地补丁到 $(git branch --show-current)..."
