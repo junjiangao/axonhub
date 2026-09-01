@@ -1,0 +1,562 @@
+diff --git a/internal/server/orchestrator/pass_through.go b/internal/server/orchestrator/pass_through.go
+index 67bab720..98ca3a0a 100644
+--- a/internal/server/orchestrator/pass_through.go
++++ b/internal/server/orchestrator/pass_through.go
+@@ -1,11 +1,14 @@
+ package orchestrator
+ 
+ import (
++	"bytes"
+ 	"context"
+ 	"fmt"
+ 	"net/http"
++	"runtime/debug"
+ 	"sync"
+ 
++	"github.com/tidwall/gjson"
+ 	"github.com/tidwall/sjson"
+ 
+ 	"github.com/looplj/axonhub/internal/log"
+@@ -344,10 +347,17 @@ func captureRawProviderStream(outbound *PersistentOutboundTransformer, systemSer
+ 		go func() {
+ 			defer func() {
+ 				if r := recover(); r != nil {
+-					log.Warn(ctx, "captureRawProviderStream goroutine panicked, recovering",
++					fields := []log.Field{
+ 						log.Any("panic", r),
+-						log.String("channel", channel.Name),
+-					)
++						log.String("stack", string(debug.Stack())),
++					}
++					if channel != nil {
++						fields = append(fields,
++							log.String("channel", channel.Name),
++							log.Int("channel_id", channel.ID),
++						)
++					}
++					log.Warn(ctx, "captureRawProviderStream goroutine panicked, recovering", fields...)
+ 					rawStreamErr = fmt.Errorf("passthrough stream panic: %v", r)
+ 				} else {
+ 					rawStreamErr = stream.Err()
+@@ -436,10 +446,63 @@ func applyPassThroughStream(outbound *PersistentOutboundTransformer, systemServi
+ 			stream.Close()
+ 		}()
+ 
+-		return &passThroughChannelStream{ctx: ctx, ch: rawCh, errRef: errRef, cancel: cancel}, nil
++		return streams.Map(&passThroughChannelStream{ctx: ctx, ch: rawCh, errRef: errRef, cancel: cancel}, normalizePassThroughFinishReason), nil
+ 	})
+ }
+ 
++// normalizePassThroughFinishReason rewrites an empty finish_reason string to null
++// in chat completion stream chunks delivered through pass-through. Some providers
++// (e.g. Sensenova) emit finish_reason:"" on every content chunk. That empty string
++// is not a valid finish_reason per the OpenAI spec (intermediate chunks must use
++// null), so strict clients fail to deserialize it. Rewriting "" -> null makes the
++// pass-through stream spec-compliant while leaving all other bytes untouched.
++func normalizePassThroughFinishReason(ev *httpclient.StreamEvent) *httpclient.StreamEvent {
++	if ev == nil || len(ev.Data) == 0 {
++		return ev
++	}
++
++	// Fast path: skip events that cannot carry a finish_reason field.
++	if !bytes.Contains(ev.Data, []byte("finish_reason")) {
++		return ev
++	}
++
++	if gjson.GetBytes(ev.Data, "object").String() != "chat.completion.chunk" {
++		return ev
++	}
++
++	choices := gjson.GetBytes(ev.Data, "choices")
++	if !choices.IsArray() {
++		return ev
++	}
++
++	body := ev.Data
++	rewritten := false
++	choices.ForEach(func(key, value gjson.Result) bool {
++		reason := value.Get("finish_reason")
++		if reason.Type != gjson.String || reason.String() != "" {
++			return true
++		}
++
++		var err error
++		body, err = sjson.SetBytes(body, "choices."+key.String()+".finish_reason", nil)
++		if err != nil {
++			return false
++		}
++		rewritten = true
++
++		return true
++	})
++
++	if !rewritten {
++		return ev
++	}
++
++	next := *ev
++	next.Data = body
++
++	return &next
++}
++
+ // passThroughChannelStream wraps a channel as a Stream.
+ //
+ //nolint:containedctx // Required so Next() can observe request cancellation.
+diff --git a/internal/server/orchestrator/pass_through_test.go b/internal/server/orchestrator/pass_through_test.go
+index e41e46d4..e48421ce 100644
+--- a/internal/server/orchestrator/pass_through_test.go
++++ b/internal/server/orchestrator/pass_through_test.go
+@@ -925,6 +925,129 @@ func TestPassThroughChannelStream_StopsAtEmptyBufferAfterCancel(t *testing.T) {
+ 	assert.True(t, upstreamCanceled)
+ }
+ 
++func TestNormalizePassThroughFinishReason(t *testing.T) {
++	t.Run("empty finish_reason becomes null", func(t *testing.T) {
++		ev := &httpclient.StreamEvent{
++			Data: json.RawMessage(`{"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":""}]}`),
++		}
++
++		out := normalizePassThroughFinishReason(ev)
++		require.NotSame(t, ev, out, "normalization must not mutate the original event")
++		require.Equal(t, gjson.Null, gjson.GetBytes(out.Data, "choices.0.finish_reason").Type)
++		require.Equal(t, "hi", gjson.GetBytes(out.Data, "choices.0.delta.content").String())
++	})
++
++	t.Run("valid finish_reason stays unchanged", func(t *testing.T) {
++		ev := &httpclient.StreamEvent{
++			Data: json.RawMessage(`{"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`),
++		}
++
++		out := normalizePassThroughFinishReason(ev)
++		require.Same(t, ev, out)
++	})
++
++	t.Run("non chat-completion chunk stays unchanged", func(t *testing.T) {
++		ev := &httpclient.StreamEvent{
++			Data: json.RawMessage(`{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"content":"hi"},"finish_reason":""}]}`),
++		}
++
++		out := normalizePassThroughFinishReason(ev)
++		require.Same(t, ev, out)
++	})
++
++	t.Run("event without finish_reason field stays unchanged", func(t *testing.T) {
++		ev := &httpclient.StreamEvent{
++			Data: json.RawMessage(`{"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"}}]}`),
++		}
++
++		out := normalizePassThroughFinishReason(ev)
++		require.Same(t, ev, out)
++	})
++
++	t.Run("multiple choices normalize only empty ones", func(t *testing.T) {
++		ev := &httpclient.StreamEvent{
++			Data: json.RawMessage(`{"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"a"},"finish_reason":""},{"index":1,"delta":{"content":"b"},"finish_reason":"length"}]}`),
++		}
++
++		out := normalizePassThroughFinishReason(ev)
++		require.Equal(t, gjson.Null, gjson.GetBytes(out.Data, "choices.0.finish_reason").Type)
++		require.Equal(t, "length", gjson.GetBytes(out.Data, "choices.1.finish_reason").String())
++	})
++
++	t.Run("nil and empty events pass through", func(t *testing.T) {
++		require.Nil(t, normalizePassThroughFinishReason(nil))
++
++		ev := &httpclient.StreamEvent{Data: []byte{}}
++		require.Same(t, ev, normalizePassThroughFinishReason(ev))
++	})
++}
++
++func TestApplyPassThroughStream_NormalizesEmptyFinishReason(t *testing.T) {
++	ctx := context.Background()
++	channel := &biz.Channel{
++		Channel: &ent.Channel{
++			ID:   1,
++			Name: "test",
++			Settings: &objects.ChannelSettings{
++				PassThroughBody: lo.ToPtr(true),
++			},
++		},
++	}
++	rawCh := make(chan *httpclient.StreamEvent, 8)
++	state := &PersistenceState{
++		CurrentCandidate:      &ChannelModelsCandidate{Channel: channel},
++		RawStreamCh:           rawCh,
++		OriginalRequestStream: lo.ToPtr(true),
++		LlmRequest: &llm.Request{
++			APIFormat: llm.APIFormatOpenAIChatCompletion,
++			Stream:    lo.ToPtr(true),
++			RawRequest: &httpclient.Request{
++				APIFormat: string(llm.APIFormatOpenAIChatCompletion),
++				Body:      []byte(`{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}`),
++			},
++		},
++		RawProviderRequest: &httpclient.Request{
++			APIFormat: string(llm.APIFormatOpenAIChatCompletion),
++		},
++	}
++	outbound := &PersistentOutboundTransformer{state: state}
++
++	transformed := testHTTPStream([]*httpclient.StreamEvent{
++		{Data: json.RawMessage(`{"id":"t1"}`)},
++	})
++
++	rawEvents := []*httpclient.StreamEvent{
++		{Data: json.RawMessage(`{"id":"r1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":""}]}`)},
++		{Data: json.RawMessage(`{"id":"r2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)},
++		{Data: json.RawMessage(`[DONE]`)},
++	}
++
++	go func() {
++		for _, ev := range rawEvents {
++			rawCh <- ev
++		}
++
++		close(rawCh)
++	}()
++
++	mw := applyPassThroughStream(outbound, nil)
++	result, err := mw.OnInboundRawStream(ctx, transformed)
++	require.NoError(t, err)
++
++	var passthroughEvents []*httpclient.StreamEvent
++	for result.Next() {
++		passthroughEvents = append(passthroughEvents, result.Current())
++	}
++
++	require.Len(t, passthroughEvents, 3)
++	// Content chunk: empty finish_reason normalized to null.
++	require.Equal(t, gjson.Null, gjson.GetBytes(passthroughEvents[0].Data, "choices.0.finish_reason").Type)
++	// Terminal chunk: valid finish_reason preserved.
++	require.Equal(t, "stop", gjson.GetBytes(passthroughEvents[1].Data, "choices.0.finish_reason").String())
++	// Terminal sentinel untouched.
++	require.Equal(t, []byte("[DONE]"), passthroughEvents[2].Data)
++}
++
+ type doneStream struct {
+ 	stream streams.Stream[*httpclient.StreamEvent]
+ 	done   chan struct{}
+diff --git a/llm/httpclient/decoder.go b/llm/httpclient/decoder.go
+index 514d0e57..a0fabce9 100644
+--- a/llm/httpclient/decoder.go
++++ b/llm/httpclient/decoder.go
+@@ -8,6 +8,7 @@ import (
+ 	"fmt"
+ 	"io"
+ 	"log/slog"
++	"runtime/debug"
+ 
+ 	"sync"
+ 	"sync/atomic"
+@@ -152,7 +153,18 @@ func (s *defaultSSEDecoder) Next() bool {
+ 	default:
+ 	}
+ 
+-	event, err := s.sseStream.Recv()
++	event, err := func() (ev sse.Event, err error) {
++		defer func() {
++			if r := recover(); r != nil {
++				slog.ErrorContext(s.ctx, "SSE decoder panicked in Recv",
++					slog.Any("panic", r),
++					slog.String("stack", string(debug.Stack())),
++				)
++				err = fmt.Errorf("sse decoder panic: %v", r)
++			}
++		}()
++		return s.sseStream.Recv()
++	}()
+ 	if err != nil {
+ 		if errors.Is(err, io.EOF) {
+ 			slog.DebugContext(s.ctx, "SSE stream closed")
+diff --git a/llm/transformer/openai/inbound.go b/llm/transformer/openai/inbound.go
+index 6112fddf..da2d5e7b 100644
+--- a/llm/transformer/openai/inbound.go
++++ b/llm/transformer/openai/inbound.go
+@@ -13,6 +13,7 @@ import (
+ 	"github.com/looplj/axonhub/llm/internal/pkg/xjson"
+ 	"github.com/looplj/axonhub/llm/streams"
+ 	transformer "github.com/looplj/axonhub/llm/transformer"
++	"github.com/samber/lo"
+ )
+ 
+ // InboundTransformer implements transformer.Inbound for OpenAI format.
+@@ -104,9 +105,11 @@ func (t *InboundTransformer) TransformStream(
+ 	ctx context.Context,
+ 	stream streams.Stream[*llm.Response],
+ ) (streams.Stream[*httpclient.StreamEvent], error) {
+-	return streams.NoNil(streams.MapErr(stream, func(chunk *llm.Response) (*httpclient.StreamEvent, error) {
+-		return t.TransformStreamChunk(ctx, chunk)
+-	})), nil
++	return streams.NoNil(&openAIInboundStream{
++		source: stream,
++		ctx:    ctx,
++		t:      t,
++	}), nil
+ }
+ 
+ func (t *InboundTransformer) TransformStreamChunk(
+@@ -130,6 +133,9 @@ func (t *InboundTransformer) TransformStreamChunk(
+ 		return nil, nil
+ 	}
+ 
++	// finish_reason synthesis is handled at the stream level by openAIInboundStream.
++	// See ensureStreamFinishReason.
++
+ 	// Convert to OpenAI Response format
+ 	oaiResp := ResponseFromLLM(chatResp)
+ 
+@@ -145,6 +151,92 @@ func (t *InboundTransformer) TransformStreamChunk(
+ 	}, nil
+ }
+ 
++// openAIInboundStream is a stateful stream that synthesizes finish_reason
++// for upstream providers that omit it (e.g. glm-5.1).
++//
++//nolint:containedctx // Checked.
++type openAIInboundStream struct {
++	source streams.Stream[*llm.Response]
++	ctx    context.Context
++	t      *InboundTransformer
++
++	// hasSeenToolCalls tracks whether any prior chunk contained tool calls,
++	// used to infer the correct finish_reason for usage-only terminal chunks.
++	hasSeenToolCalls    bool
++	hasSeenFinishReason bool
++
++	current *httpclient.StreamEvent
++	err     error
++}
++
++func (s *openAIInboundStream) Next() bool {
++	for s.source.Next() {
++		chunk := s.source.Current()
++		// Synthesize finish_reason before transforming the chunk.
++		ensureStreamFinishReason(chunk, &s.hasSeenToolCalls, &s.hasSeenFinishReason)
++		event, err := s.t.TransformStreamChunk(s.ctx, chunk)
++		if err != nil {
++			s.err = err
++			return false
++		}
++		if event == nil {
++			continue
++		}
++		s.current = event
++		return true
++	}
++	return false
++}
++
++func (s *openAIInboundStream) Current() *httpclient.StreamEvent {
++	return s.current
++}
++
++func (s *openAIInboundStream) Err() error {
++	if s.err != nil {
++		return s.err
++	}
++	return s.source.Err()
++}
++
++func (s *openAIInboundStream) Close() error {
++	return s.source.Close()
++}
++
++// ensureStreamFinishReason synthesizes finish_reason only for a terminal
++// usage-only chunk. Regular content and tool-call chunks remain non-terminal.
++// hasSeenToolCalls determines whether the terminal reason is "tool_calls" or
++// "stop" when the upstream provider omits finish_reason.
++func ensureStreamFinishReason(resp *llm.Response, hasSeenToolCalls, hasSeenFinishReason *bool) {
++	if resp == nil {
++		return
++	}
++
++	for i := range resp.Choices {
++		c := &resp.Choices[i]
++		if c.FinishReason != nil && *c.FinishReason != "" {
++			*hasSeenFinishReason = true
++		}
++		if c.Delta == nil || len(c.Delta.ToolCalls) == 0 {
++			continue
++		}
++		*hasSeenToolCalls = true
++	}
++
++	if !*hasSeenFinishReason && len(resp.Choices) == 0 && resp.Usage != nil {
++		reason := "stop"
++		if *hasSeenToolCalls {
++			reason = "tool_calls"
++		}
++		resp.Choices = append(resp.Choices, llm.Choice{
++			Index:        0,
++			Delta:        &llm.Message{},
++			FinishReason: lo.ToPtr(reason),
++		})
++		*hasSeenFinishReason = true
++	}
++}
++
+ // isReasoningSignatureEvent checks if the response contains ONLY ReasoningSignature.
+ // This is a helper function to filter out reasoning signature events when transforming
+ // to OpenAI format, since OpenAI format doesn't support ReasoningSignature in streaming.
+diff --git a/llm/transformer/openai/inbound_test.go b/llm/transformer/openai/inbound_test.go
+index ce4ac7fd..a24b2b89 100644
+--- a/llm/transformer/openai/inbound_test.go
++++ b/llm/transformer/openai/inbound_test.go
+@@ -469,6 +469,7 @@ func TestInboundTransformer_TransformStreamChunk(t *testing.T) {
+ 					*chatResp.Choices[0].FinishReason == "tool_calls"
+ 			},
+ 		},
++
+ 		{
+ 			name: "empty choices",
+ 			response: &llm.Response{
+@@ -483,6 +484,7 @@ func TestInboundTransformer_TransformStreamChunk(t *testing.T) {
+ 				return event.Type == ""
+ 			},
+ 		},
++
+ 		{
+ 			name:        "nil response",
+ 			response:    nil,
+@@ -529,6 +531,140 @@ func TestInboundTransformer_TransformStreamChunk(t *testing.T) {
+ 	}
+ }
+ 
++func TestInboundTransformer_TransformStream_SynthesizesFinishReason(t *testing.T) {
++	transformer := NewInboundTransformer()
++
++	t.Run("tool call chunk stays non-terminal and usage-only chunk gets tool_calls", func(t *testing.T) {
++		stream, err := transformer.TransformStream(t.Context(), streams.SliceStream([]*llm.Response{
++			{
++				ID:      "chatcmpl-123",
++				Object:  "chat.completion.chunk",
++				Created: 1677652288,
++				Model:   "gpt-4",
++				Choices: []llm.Choice{
++					{
++						Index: 0,
++						Delta: &llm.Message{
++							Role: "assistant",
++							ToolCalls: []llm.ToolCall{
++								{
++									ID:   "call_123",
++									Type: "function",
++									Function: llm.FunctionCall{
++										Name: "get_user_city",
++									},
++									Index: 0,
++								},
++							},
++						},
++					},
++				},
++			},
++			{
++				ID:      "chatcmpl-123",
++				Object:  "chat.completion.chunk",
++				Created: 1677652289,
++				Model:   "gpt-4",
++				Choices: []llm.Choice{},
++				Usage: &llm.Usage{
++					PromptTokens:     10,
++					CompletionTokens: 20,
++					TotalTokens:      30,
++				},
++			},
++			{
++				Object: "[DONE]",
++			},
++		}))
++		require.NoError(t, err)
++
++		var events []*httpclient.StreamEvent
++		for stream.Next() {
++			events = append(events, stream.Current())
++		}
++		require.NoError(t, stream.Err())
++		require.Len(t, events, 3) // tool call chunk + usage chunk + [DONE]
++
++		var toolCallChunk llm.Response
++		require.NoError(t, json.Unmarshal(events[0].Data, &toolCallChunk))
++		require.Nil(t, toolCallChunk.Choices[0].FinishReason)
++
++		// Usage-only chunk gets the terminal reason after all tool-call data.
++		var usageChunk llm.Response
++		require.NoError(t, json.Unmarshal(events[1].Data, &usageChunk))
++		require.Len(t, usageChunk.Choices, 1)
++		require.NotNil(t, usageChunk.Choices[0].FinishReason)
++		require.Equal(t, "tool_calls", *usageChunk.Choices[0].FinishReason)
++	})
++
++	t.Run("usage-only chunk without prior tool calls gets stop as finish_reason", func(t *testing.T) {
++		stream, err := transformer.TransformStream(t.Context(), streams.SliceStream([]*llm.Response{
++			{
++				ID:      "chatcmpl-123",
++				Object:  "chat.completion.chunk",
++				Created: 1677652288,
++				Model:   "gpt-4",
++				Choices: []llm.Choice{
++					{
++						Index: 0,
++						Delta: &llm.Message{
++							Role: "assistant",
++							Content: llm.MessageContent{
++								Content: lo.ToPtr("Hello"),
++							},
++						},
++					},
++				},
++			},
++			{
++				ID:      "chatcmpl-123",
++				Object:  "chat.completion.chunk",
++				Created: 1677652289,
++				Model:   "gpt-4",
++				Choices: []llm.Choice{},
++				Usage: &llm.Usage{
++					PromptTokens:     10,
++					CompletionTokens: 20,
++					TotalTokens:      30,
++				},
++			},
++			{
++				Object: "[DONE]",
++			},
++		}))
++		require.NoError(t, err)
++
++		var events []*httpclient.StreamEvent
++		for stream.Next() {
++			events = append(events, stream.Current())
++		}
++		require.NoError(t, stream.Err())
++		require.Len(t, events, 3) // text chunk + usage chunk + [DONE]
++
++		// Usage-only chunk (events[1]) without prior tool calls should get "stop"
++		var usageChunk llm.Response
++		require.NoError(t, json.Unmarshal(events[1].Data, &usageChunk))
++		require.Len(t, usageChunk.Choices, 1)
++		require.NotNil(t, usageChunk.Choices[0].FinishReason)
++		require.Equal(t, "stop", *usageChunk.Choices[0].FinishReason)
++	})
++
++	t.Run("usage-only chunk stays unchanged after upstream finish_reason", func(t *testing.T) {
++		hasSeenToolCalls := false
++		hasSeenFinishReason := false
++		ensureStreamFinishReason(&llm.Response{
++			Choices: []llm.Choice{{FinishReason: lo.ToPtr("stop")}},
++		}, &hasSeenToolCalls, &hasSeenFinishReason)
++
++		usageChunk := &llm.Response{
++			Choices: []llm.Choice{},
++			Usage:   &llm.Usage{TotalTokens: 30},
++		}
++		ensureStreamFinishReason(usageChunk, &hasSeenToolCalls, &hasSeenFinishReason)
++
++		require.Empty(t, usageChunk.Choices)
++	})
++}
+ func TestInboundTransformer_TransformStream_SkipsPureReasoningSignatureChunk(t *testing.T) {
+ 	transformer := NewInboundTransformer()
+ 	signature := "stream_signature"
