@@ -1,5 +1,5 @@
 diff --git a/internal/server/orchestrator/pass_through.go b/internal/server/orchestrator/pass_through.go
-index 67bab720..743896ca 100644
+index 67bab720..5520874b 100644
 --- a/internal/server/orchestrator/pass_through.go
 +++ b/internal/server/orchestrator/pass_through.go
 @@ -1,11 +1,16 @@
@@ -40,7 +40,7 @@ index 67bab720..743896ca 100644
  					rawStreamErr = fmt.Errorf("passthrough stream panic: %v", r)
  				} else {
  					rawStreamErr = stream.Err()
-@@ -436,10 +448,580 @@ func applyPassThroughStream(outbound *PersistentOutboundTransformer, systemServi
+@@ -436,10 +448,719 @@ func applyPassThroughStream(outbound *PersistentOutboundTransformer, systemServi
  			stream.Close()
  		}()
  
@@ -378,9 +378,12 @@ index 67bab720..743896ca 100644
 +		evType == "response.reasoning_text.delta" || evType == "response.reasoning_text.done" ||
 +		evType == "response.refusal.delta" || evType == "response.refusal.done" ||
 +		evType == "response.function_call_arguments.delta" || evType == "response.function_call_arguments.done" ||
-+		evType == "response.reasoning_summary_text.delta" || evType == "response.reasoning_summary_text.done" {
++		evType == "response.reasoning_summary_text.delta" || evType == "response.reasoning_summary_text.done" ||
++		evType == "response.reasoning_summary_part.added" || evType == "response.reasoning_summary_part.done" ||
++		evType == "response.custom_tool_call_input.delta" || evType == "response.custom_tool_call_input.done" ||
++		evType == "response.code_interpreter_call_code.delta" || evType == "response.code_interpreter_call_code.done" {
 +		var err error
-+		body, rewritten, err = normalizePassThroughCommonEventFields(body)
++		body, rewritten, err = normalizePassThroughCommonEventFields(body, evType)
 +		if err != nil {
 +			return ev
 +		}
@@ -514,6 +517,12 @@ index 67bab720..743896ca 100644
 +			}
 +			rewritten = rewritten || changed
 +		}
++		// Reasoning items may carry summary parts whose text is required.
++		data, changed, err = normalizePassThroughContentArrayParts(data, prefix+".summary")
++		if err != nil {
++			return data, rewritten, err
++		}
++		rewritten = rewritten || changed
 +	case "message":
 +		status := "in_progress"
 +		if isDone {
@@ -534,6 +543,12 @@ index 67bab720..743896ca 100644
 +			}
 +			rewritten = rewritten || changed
 +		}
++		// Message content parts (output_text) require text and annotations.
++		data, changed, err = normalizePassThroughContentArrayParts(data, prefix+".content")
++		if err != nil {
++			return data, rewritten, err
++		}
++		rewritten = rewritten || changed
 +	case "function_call":
 +		for _, field := range []struct {
 +			name  string
@@ -569,21 +584,39 @@ index 67bab720..743896ca 100644
 +func normalizePassThroughContentPart(data []byte) ([]byte, bool, error) {
 +	rewritten := false
 +	partType := gjson.GetBytes(data, "part.type").String()
-+	if partType != "output_text" {
-+		return data, rewritten, nil
-+	}
 +
 +	var changed bool
 +	var err error
 +
-+	for _, field := range []struct {
-+		path  string
-+		value any
-+	}{
-+		{"part.annotations", []any{}},
-+		{"part.text", ""},
-+	} {
-+		data, changed, err = setPassThroughFieldIfMissing(data, field.path, field.value)
++	switch partType {
++	case "output_text":
++		for _, field := range []struct {
++			path  string
++			value any
++		}{
++			{"part.annotations", []any{}},
++			{"part.text", ""},
++		} {
++			data, changed, err = setPassThroughFieldIfMissing(data, field.path, field.value)
++			if err != nil {
++				return data, rewritten, err
++			}
++			rewritten = rewritten || changed
++		}
++	case "refusal":
++		data, changed, err = setPassThroughFieldIfMissing(data, "part.refusal", "")
++		if err != nil {
++			return data, rewritten, err
++		}
++		rewritten = rewritten || changed
++	case "reasoning_text":
++		data, changed, err = setPassThroughFieldIfMissing(data, "part.text", "")
++		if err != nil {
++			return data, rewritten, err
++		}
++		rewritten = rewritten || changed
++	case "summary_text":
++		data, changed, err = setPassThroughFieldIfMissing(data, "part.text", "")
 +		if err != nil {
 +			return data, rewritten, err
 +		}
@@ -593,9 +626,74 @@ index 67bab720..743896ca 100644
 +	return data, rewritten, nil
 +}
 +
-+// normalizePassThroughCommonEventFields ensures item_id/output_index/content_index
-+// exist on delta/done events that carry them.
-+func normalizePassThroughCommonEventFields(data []byte) ([]byte, bool, error) {
++// normalizePassThroughContentArrayParts walks a content or summary array (message
++// content[] parts, reasoning summary[] parts) and injects the per-part-type required
++// fields (output_text.text/annotations, refusal.refusal, summary_text.text).
++func normalizePassThroughContentArrayParts(data []byte, arrayPath string) ([]byte, bool, error) {
++	rewritten := false
++	parts := gjson.GetBytes(data, arrayPath)
++	if !parts.IsArray() {
++		return data, rewritten, nil
++	}
++
++	var err error
++	parts.ForEach(func(key, _ gjson.Result) bool {
++		var changed bool
++		data, changed, err = normalizePassThroughContentPartAt(data, arrayPath+"."+key.String())
++		rewritten = rewritten || changed
++		return err == nil
++	})
++
++	return data, rewritten, err
++}
++
++// normalizePassThroughContentPartAt injects required fields into a single content
++// part located at the given JSON path (e.g. "item.content.0").
++func normalizePassThroughContentPartAt(data []byte, partPath string) ([]byte, bool, error) {
++	rewritten := false
++	partType := gjson.GetBytes(data, partPath+".type").String()
++
++	var changed bool
++	var err error
++
++	switch partType {
++	case "output_text":
++		for _, field := range []struct {
++			name  string
++			value any
++		}{
++			{"annotations", []any{}},
++			{"text", ""},
++		} {
++			data, changed, err = setPassThroughFieldIfMissing(data, partPath+"."+field.name, field.value)
++			if err != nil {
++				return data, rewritten, err
++			}
++			rewritten = rewritten || changed
++		}
++	case "refusal":
++		data, changed, err = setPassThroughFieldIfMissing(data, partPath+".refusal", "")
++		if err != nil {
++			return data, rewritten, err
++		}
++		rewritten = rewritten || changed
++	case "summary_text", "reasoning_text":
++		data, changed, err = setPassThroughFieldIfMissing(data, partPath+".text", "")
++		if err != nil {
++			return data, rewritten, err
++		}
++		rewritten = rewritten || changed
++	}
++
++	return data, rewritten, nil
++}
++
++// normalizePassThroughCommonEventFields ensures the shared index fields
++// (item_id/output_index/content_index) and the event-type-specific payload field
++// exist on delta/done events. Different event types carry different required
++// payload fields (text, delta, arguments, refusal, input, code); without them,
++// strict clients (e.g. Grok) fail deserialization with "missing field X".
++func normalizePassThroughCommonEventFields(data []byte, evType string) ([]byte, bool, error) {
 +	rewritten := false
 +
 +	var changed bool
@@ -607,9 +705,50 @@ index 67bab720..743896ca 100644
 +	}{
 +		{"item_id", ""},
 +		{"output_index", 0},
-+		{"content_index", 0},
 +	} {
 +		data, changed, err = setPassThroughFieldIfMissing(data, field.path, field.value)
++		if err != nil {
++			return data, rewritten, err
++		}
++		rewritten = rewritten || changed
++	}
++
++	// content_index is carried by text/refusal delta-done events but not by
++	// function_call_arguments / custom_tool_call_input / code_interpreter events.
++	if evType == "response.output_text.delta" || evType == "response.output_text.done" ||
++		evType == "response.reasoning_text.delta" || evType == "response.reasoning_text.done" ||
++		evType == "response.refusal.delta" || evType == "response.refusal.done" ||
++		evType == "response.reasoning_summary_text.delta" || evType == "response.reasoning_summary_text.done" {
++		data, changed, err = setPassThroughFieldIfMissing(data, "content_index", 0)
++		if err != nil {
++			return data, rewritten, err
++		}
++		rewritten = rewritten || changed
++	}
++
++	// Event-type-specific required payload field.
++	payloadField := ""
++	switch evType {
++	case "response.output_text.delta", "response.reasoning_text.delta",
++		"response.refusal.delta", "response.reasoning_summary_text.delta",
++		"response.function_call_arguments.delta",
++		"response.custom_tool_call_input.delta",
++		"response.code_interpreter_call_code.delta":
++		payloadField = "delta"
++	case "response.output_text.done", "response.reasoning_text.done",
++		"response.reasoning_summary_text.done":
++		payloadField = "text"
++	case "response.refusal.done":
++		payloadField = "refusal"
++	case "response.function_call_arguments.done":
++		payloadField = "arguments"
++	case "response.custom_tool_call_input.done":
++		payloadField = "input"
++	case "response.code_interpreter_call_code.done":
++		payloadField = "code"
++	}
++	if payloadField != "" {
++		data, changed, err = setPassThroughFieldIfMissing(data, payloadField, "")
 +		if err != nil {
 +			return data, rewritten, err
 +		}
