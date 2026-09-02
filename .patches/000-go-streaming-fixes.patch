@@ -1,5 +1,5 @@
 diff --git a/internal/server/orchestrator/pass_through.go b/internal/server/orchestrator/pass_through.go
-index 67bab720..e7513cc3 100644
+index 67bab720..c124fb76 100644
 --- a/internal/server/orchestrator/pass_through.go
 +++ b/internal/server/orchestrator/pass_through.go
 @@ -1,11 +1,14 @@
@@ -38,7 +38,7 @@ index 67bab720..e7513cc3 100644
  					rawStreamErr = fmt.Errorf("passthrough stream panic: %v", r)
  				} else {
  					rawStreamErr = stream.Err()
-@@ -436,10 +446,173 @@ func applyPassThroughStream(outbound *PersistentOutboundTransformer, systemServi
+@@ -436,10 +446,214 @@ func applyPassThroughStream(outbound *PersistentOutboundTransformer, systemServi
  			stream.Close()
  		}()
  
@@ -46,10 +46,13 @@ index 67bab720..e7513cc3 100644
 +		rawStream := &passThroughChannelStream{ctx: ctx, ch: rawCh, errRef: errRef, cancel: cancel}
 +		// Chain the raw-byte normalizations applied to pass-through chunks:
 +		// finish_reason:"" -> null, tool_calls delta function name:"" -> null, and
-+		// response.created status:"" -> "in_progress".
++		// response.created status:"" -> "in_progress" and output:null -> [].
 +		return streams.Map(
-+			streams.Map(streams.Map(rawStream, normalizePassThroughFinishReason), normalizePassThroughToolCallName),
-+			normalizePassThroughResponseStatus,
++			streams.Map(
++				streams.Map(streams.Map(rawStream, normalizePassThroughFinishReason), normalizePassThroughToolCallName),
++				normalizePassThroughResponseStatus,
++			),
++			normalizePassThroughResponseOutput,
 +		), nil
  	})
  }
@@ -200,6 +203,44 @@ index 67bab720..e7513cc3 100644
 +	}
 +
 +	body, err := sjson.SetBytes(ev.Data, "response.status", "in_progress")
++	if err != nil {
++		return ev
++	}
++
++	next := *ev
++	next.Data = body
++
++	return &next
++}
++
++// normalizePassThroughResponseOutput rewrites a null response.output to an empty
++// array in OpenAI Responses API stream events delivered through pass-through.
++// Some providers (e.g. UnionTech) emit response.created with output:null instead
++// of the spec-mandated empty array []. Per the Responses API spec, output is an
++// array of items ([] in response.created, populated by the time response.completed
++// arrives), so strict clients (e.g. Grok) fail to deserialize the whole response.
++// Rewriting null -> [] on response.created makes the pass-through stream
++// spec-compliant while leaving all other bytes untouched.
++func normalizePassThroughResponseOutput(ev *httpclient.StreamEvent) *httpclient.StreamEvent {
++	if ev == nil || len(ev.Data) == 0 {
++		return ev
++	}
++
++	// Fast path: only response.created carries the initial response.output.
++	if !bytes.Contains(ev.Data, []byte("response.created")) {
++		return ev
++	}
++
++	if gjson.GetBytes(ev.Data, "type").String() != "response.created" {
++		return ev
++	}
++
++	output := gjson.GetBytes(ev.Data, "response.output")
++	if output.Type != gjson.Null {
++		return ev
++	}
++
++	body, err := sjson.SetRawBytes(ev.Data, "response.output", []byte("[]"))
 +	if err != nil {
 +		return ev
 +	}
