@@ -1,5 +1,5 @@
 diff --git a/frontend/src/features/requests/components/requests-columns.tsx b/frontend/src/features/requests/components/requests-columns.tsx
-index 6918e03f..515b5119 100644
+index f02919e6..ae6a9c1f 100644
 --- a/frontend/src/features/requests/components/requests-columns.tsx
 +++ b/frontend/src/features/requests/components/requests-columns.tsx
 @@ -431,15 +431,22 @@ export function useRequestsColumns(options?: UseRequestsColumnsOptions): ColumnD
@@ -42,7 +42,7 @@ index 6918e03f..515b5119 100644
          );
        },
 diff --git a/frontend/src/locales/en/requests.json b/frontend/src/locales/en/requests.json
-index 522ae861..ad73dc16 100644
+index 842ccf2b..b6d660ca 100644
 --- a/frontend/src/locales/en/requests.json
 +++ b/frontend/src/locales/en/requests.json
 @@ -8,8 +8,6 @@
@@ -55,7 +55,7 @@ index 522ae861..ad73dc16 100644
    "requests.columns.passThrough": "Pass-through",
    "requests.columns.reasoningEffort": "Reasoning Effort",
 diff --git a/frontend/src/locales/zh-CN/requests.json b/frontend/src/locales/zh-CN/requests.json
-index 3d259a2e..fdc171aa 100644
+index ced82dc4..08585ab2 100644
 --- a/frontend/src/locales/zh-CN/requests.json
 +++ b/frontend/src/locales/zh-CN/requests.json
 @@ -8,8 +8,6 @@
