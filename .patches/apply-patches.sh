@@ -12,6 +12,7 @@ PATCHES=(
   "000-go-streaming-fixes.patch"
   "004-local-changes.patch"
   "005-request-log-cache-hit-rate.patch"
+  "006-pass-through-tool-call-name.patch"
 )
 
 echo ">>> 应用本地补丁到 $(git branch --show-current)..."

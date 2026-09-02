@@ -1,0 +1,213 @@
+diff --git a/internal/server/orchestrator/pass_through.go b/internal/server/orchestrator/pass_through.go
+index 98ca3a0a..bbff1e26 100644
+--- a/internal/server/orchestrator/pass_through.go
++++ b/internal/server/orchestrator/pass_through.go
+@@ -446,7 +446,10 @@ func applyPassThroughStream(outbound *PersistentOutboundTransformer, systemServi
+ 			stream.Close()
+ 		}()
+ 
+-		return streams.Map(&passThroughChannelStream{ctx: ctx, ch: rawCh, errRef: errRef, cancel: cancel}, normalizePassThroughFinishReason), nil
++		rawStream := &passThroughChannelStream{ctx: ctx, ch: rawCh, errRef: errRef, cancel: cancel}
++		// Chain the raw-byte normalizations applied to pass-through chunks:
++		// finish_reason:"" -> null and tool_calls delta function name:"" -> null.
++		return streams.Map(streams.Map(rawStream, normalizePassThroughFinishReason), normalizePassThroughToolCallName), nil
+ 	})
+ }
+ 
+@@ -503,6 +506,70 @@ func normalizePassThroughFinishReason(ev *httpclient.StreamEvent) *httpclient.St
+ 	return &next
+ }
+ 
++// normalizePassThroughToolCallName rewrites an empty tool-call function name
++// string to null in chat completion stream chunks delivered through pass-through.
++// Some providers (e.g. UnionTech) emit the tool-call delta's function name only on
++// the first chunk and then repeat name:"" on every subsequent arguments chunk. An
++// empty string is not a valid function name per the OpenAI spec (intermediate chunks
++// must omit it or use null), so strict clients (e.g. Grok) fail to deserialize the
++// chunk and drop the whole tool call. Rewriting "" -> null makes the pass-through
++// stream spec-compliant while leaving all other bytes untouched.
++func normalizePassThroughToolCallName(ev *httpclient.StreamEvent) *httpclient.StreamEvent {
++	if ev == nil || len(ev.Data) == 0 {
++		return ev
++	}
++
++	// Fast path: skip events that cannot carry a tool_calls delta.
++	if !bytes.Contains(ev.Data, []byte("tool_calls")) {
++		return ev
++	}
++
++	if gjson.GetBytes(ev.Data, "object").String() != "chat.completion.chunk" {
++		return ev
++	}
++
++	choices := gjson.GetBytes(ev.Data, "choices")
++	if !choices.IsArray() {
++		return ev
++	}
++
++	body := ev.Data
++	rewritten := false
++	choices.ForEach(func(choiceKey, choiceValue gjson.Result) bool {
++		toolCalls := choiceValue.Get("delta.tool_calls")
++		if !toolCalls.IsArray() {
++			return true
++		}
++
++		toolCalls.ForEach(func(toolCallKey, toolCallValue gjson.Result) bool {
++			name := toolCallValue.Get("function.name")
++			if name.Type != gjson.String || name.String() != "" {
++				return true
++			}
++
++			var err error
++			body, err = sjson.SetBytes(body, "choices."+choiceKey.String()+".delta.tool_calls."+toolCallKey.String()+".function.name", nil)
++			if err != nil {
++				return false
++			}
++			rewritten = true
++
++			return true
++		})
++
++		return true
++	})
++
++	if !rewritten {
++		return ev
++	}
++
++	next := *ev
++	next.Data = body
++
++	return &next
++}
++
+ // passThroughChannelStream wraps a channel as a Stream.
+ //
+ //nolint:containedctx // Required so Next() can observe request cancellation.
+diff --git a/internal/server/orchestrator/pass_through_test.go b/internal/server/orchestrator/pass_through_test.go
+index e48421ce..0cdc052b 100644
+--- a/internal/server/orchestrator/pass_through_test.go
++++ b/internal/server/orchestrator/pass_through_test.go
+@@ -982,6 +982,64 @@ func TestNormalizePassThroughFinishReason(t *testing.T) {
+ 	})
+ }
+ 
++func TestNormalizePassThroughToolCallName(t *testing.T) {
++	t.Run("empty tool call function name becomes null", func(t *testing.T) {
++		ev := &httpclient.StreamEvent{
++			Data: json.RawMessage(`{"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"","arguments":"{\"path\":\"/\"}"}}]}}]}]}`),
++		}
++
++		out := normalizePassThroughToolCallName(ev)
++		require.NotSame(t, ev, out, "normalization must not mutate the original event")
++		require.Equal(t, gjson.Null, gjson.GetBytes(out.Data, "choices.0.delta.tool_calls.0.function.name").Type)
++		require.Equal(t, "call_1", gjson.GetBytes(out.Data, "choices.0.delta.tool_calls.0.id").String())
++		require.Equal(t, `{"path":"/"}`, gjson.GetBytes(out.Data, "choices.0.delta.tool_calls.0.function.arguments").String())
++	})
++
++	t.Run("valid tool call name stays unchanged", func(t *testing.T) {
++		ev := &httpclient.StreamEvent{
++			Data: json.RawMessage(`{"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"list_dir","arguments":""}}]}}]}]}`),
++		}
++
++		out := normalizePassThroughToolCallName(ev)
++		require.Same(t, ev, out)
++	})
++
++	t.Run("multiple tool calls normalize only empty names", func(t *testing.T) {
++		ev := &httpclient.StreamEvent{
++			Data: json.RawMessage(`{"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","type":"function","function":{"name":"","arguments":"{}"}},{"index":1,"id":"b","type":"function","function":{"name":"read_file","arguments":"{}"}}]}}]}]}`),
++		}
++
++		out := normalizePassThroughToolCallName(ev)
++		require.Equal(t, gjson.Null, gjson.GetBytes(out.Data, "choices.0.delta.tool_calls.0.function.name").Type)
++		require.Equal(t, "read_file", gjson.GetBytes(out.Data, "choices.0.delta.tool_calls.1.function.name").String())
++	})
++
++	t.Run("non chat-completion chunk stays unchanged", func(t *testing.T) {
++		ev := &httpclient.StreamEvent{
++			Data: json.RawMessage(`{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"tool_calls":[{"index":0,"id":"a","type":"function","function":{"name":"","arguments":"{}"}}]}}]}]}`),
++		}
++
++		out := normalizePassThroughToolCallName(ev)
++		require.Same(t, ev, out)
++	})
++
++	t.Run("event without tool_calls field stays unchanged", func(t *testing.T) {
++		ev := &httpclient.StreamEvent{
++			Data: json.RawMessage(`{"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"}}]}`),
++		}
++
++		out := normalizePassThroughToolCallName(ev)
++		require.Same(t, ev, out)
++	})
++
++	t.Run("nil and empty events pass through", func(t *testing.T) {
++		require.Nil(t, normalizePassThroughToolCallName(nil))
++
++		ev := &httpclient.StreamEvent{Data: []byte{}}
++		require.Same(t, ev, normalizePassThroughToolCallName(ev))
++	})
++}
++
+ func TestApplyPassThroughStream_NormalizesEmptyFinishReason(t *testing.T) {
+ 	ctx := context.Background()
+ 	channel := &biz.Channel{
+diff --git a/llm/transformer/openai/inbound_test.go b/llm/transformer/openai/inbound_test.go
+index a24b2b89..05154f2a 100644
+--- a/llm/transformer/openai/inbound_test.go
++++ b/llm/transformer/openai/inbound_test.go
+@@ -1,6 +1,7 @@
+ package openai
+ 
+ import (
++	"bytes"
+ 	"context"
+ 	"encoding/json"
+ 	"net/http"
+@@ -470,6 +471,44 @@ func TestInboundTransformer_TransformStreamChunk(t *testing.T) {
+ 			},
+ 		},
+ 
++		{
++			name: "streaming chunk with empty tool call name omits name field",
++			response: &llm.Response{
++				ID:      "chatcmpl-124",
++				Object:  "chat.completion.chunk",
++				Created: 1677652288,
++				Model:   "gpt-4",
++				Choices: []llm.Choice{
++					{
++						Index: 0,
++						Delta: &llm.Message{
++							Role: "assistant",
++							ToolCalls: []llm.ToolCall{
++								{
++									ID:   "call_124",
++									Type: "function",
++									Function: llm.FunctionCall{
++										Name:      "",
++										Arguments: `{"path":"/"}`,
++									},
++								},
++							},
++						},
++					},
++				},
++			},
++			wantErr: false,
++			validate: func(event *httpclient.StreamEvent) bool {
++				// The empty name must not be serialized as name:"" (which strict
++				// clients like Grok reject); it should be omitted entirely.
++				if bytes.Contains(event.Data, []byte(`"name":""`)) {
++					return false
++				}
++				// Arguments survive with JSON-escaped quotes inside the string value.
++				return bytes.Contains(event.Data, []byte(`"arguments":"{\"path\":\"/\"}"`))
++			},
++		},
++
+ 		{
+ 			name: "empty choices",
+ 			response: &llm.Response{
