@@ -1,8 +1,8 @@
 diff --git a/internal/server/orchestrator/pass_through.go b/internal/server/orchestrator/pass_through.go
-index 67bab720..02e91e9e 100644
+index 67bab720..743896ca 100644
 --- a/internal/server/orchestrator/pass_through.go
 +++ b/internal/server/orchestrator/pass_through.go
-@@ -1,11 +1,15 @@
+@@ -1,11 +1,16 @@
  package orchestrator
  
  import (
@@ -13,12 +13,13 @@ index 67bab720..02e91e9e 100644
 +	"runtime/debug"
 +	"strings"
  	"sync"
++	"time"
  
 +	"github.com/tidwall/gjson"
  	"github.com/tidwall/sjson"
  
  	"github.com/looplj/axonhub/internal/log"
-@@ -344,10 +348,17 @@ func captureRawProviderStream(outbound *PersistentOutboundTransformer, systemSer
+@@ -344,10 +349,17 @@ func captureRawProviderStream(outbound *PersistentOutboundTransformer, systemSer
  		go func() {
  			defer func() {
  				if r := recover(); r != nil {
@@ -39,7 +40,7 @@ index 67bab720..02e91e9e 100644
  					rawStreamErr = fmt.Errorf("passthrough stream panic: %v", r)
  				} else {
  					rawStreamErr = stream.Err()
-@@ -436,10 +447,267 @@ func applyPassThroughStream(outbound *PersistentOutboundTransformer, systemServi
+@@ -436,10 +448,580 @@ func applyPassThroughStream(outbound *PersistentOutboundTransformer, systemServi
  			stream.Close()
  		}()
  
@@ -53,10 +54,13 @@ index 67bab720..02e91e9e 100644
 +		return streams.Map(
 +			streams.Map(
 +				streams.Map(
-+					streams.Map(streams.Map(rawStream, normalizePassThroughFinishReason), normalizePassThroughToolCallName),
-+					normalizePassThroughResponseStatus,
++					streams.Map(
++						streams.Map(streams.Map(rawStream, normalizePassThroughFinishReason), normalizePassThroughToolCallName),
++						normalizePassThroughResponseStatus,
++					),
++					normalizePassThroughResponseOutput,
 +				),
-+				normalizePassThroughResponseOutput,
++				normalizePassThroughResponseRequiredFields,
 +			),
 +			normalizePassThroughSequenceNumber(&sequenceNumber),
 +		), nil
@@ -303,6 +307,316 @@ index 67bab720..02e91e9e 100644
 +
 +		return &next
 +	}
++}
++
++// setPassThroughFieldIfMissing injects value at path unless the field already
++// exists with a non-null value. Returns the new body and whether it changed.
++func setPassThroughFieldIfMissing(data []byte, path string, value any) ([]byte, bool, error) {
++	existing := gjson.GetBytes(data, path)
++	if existing.Exists() && existing.Type != gjson.Null {
++		return data, false, nil
++	}
++
++	body, err := sjson.SetBytes(data, path, value)
++	if err != nil {
++		return data, false, err
++	}
++
++	return body, true, nil
++}
++
++// normalizePassThroughResponseRequiredFields injects spec-mandated required fields
++// into Responses API stream events that omit them, so strict clients (e.g. Grok)
++// do not fail deserialization with "missing field X". Some providers (e.g.
++// UnionTech) emit events that omit required fields such as the reasoning item's
++// summary, the response object's identity fields, output_text annotations, message
++// role/status, function-call name, and usage sub-fields. This rewrites only the
++// missing fields and leaves every existing byte untouched.
++func normalizePassThroughResponseRequiredFields(ev *httpclient.StreamEvent) *httpclient.StreamEvent {
++	if ev == nil || len(ev.Data) == 0 {
++		return ev
++	}
++
++	// Fast path: only Responses API events carry these fields.
++	evType := gjson.GetBytes(ev.Data, "type").String()
++	if !strings.HasPrefix(evType, "response.") && evType != "error" {
++		return ev
++	}
++
++	body := ev.Data
++	rewritten := false
++
++	// response.* events embed the full Response object.
++	if strings.HasPrefix(evType, "response.") && evType != "response.error" {
++		var err error
++		body, rewritten, err = normalizePassThroughResponseObject(body, evType)
++		if err != nil {
++			return ev
++		}
++	}
++
++	// output_item events carry an OutputItem.
++	if evType == "response.output_item.added" || evType == "response.output_item.done" {
++		var err error
++		body, rewritten, err = normalizePassThroughOutputItem(body, "item", evType == "response.output_item.done")
++		if err != nil {
++			return ev
++		}
++	}
++
++	// content_part events carry an OutputContent part.
++	if evType == "response.content_part.added" || evType == "response.content_part.done" {
++		var err error
++		body, rewritten, err = normalizePassThroughContentPart(body)
++		if err != nil {
++			return ev
++		}
++	}
++
++	// delta/done events share item_id/output_index/content_index.
++	if evType == "response.output_text.delta" || evType == "response.output_text.done" ||
++		evType == "response.reasoning_text.delta" || evType == "response.reasoning_text.done" ||
++		evType == "response.refusal.delta" || evType == "response.refusal.done" ||
++		evType == "response.function_call_arguments.delta" || evType == "response.function_call_arguments.done" ||
++		evType == "response.reasoning_summary_text.delta" || evType == "response.reasoning_summary_text.done" {
++		var err error
++		body, rewritten, err = normalizePassThroughCommonEventFields(body)
++		if err != nil {
++			return ev
++		}
++	}
++
++	if !rewritten {
++		return ev
++	}
++
++	next := *ev
++	next.Data = body
++
++	return &next
++}
++
++// normalizePassThroughResponseObject ensures the Response object embedded in
++// response.* events carries all fields async-openai deserializes as required.
++func normalizePassThroughResponseObject(data []byte, evType string) ([]byte, bool, error) {
++	rewritten := false
++
++	var changed bool
++	var err error
++
++	for _, field := range []struct {
++		path  string
++		value any
++	}{
++		{"response.object", "response"},
++		{"response.id", "resp_passthrough"},
++		{"response.created_at", time.Now().Unix()},
++		{"response.model", "unknown"},
++	} {
++		data, changed, err = setPassThroughFieldIfMissing(data, field.path, field.value)
++		if err != nil {
++			return data, rewritten, err
++		}
++		rewritten = rewritten || changed
++	}
++
++	// status: infer a sensible value from the event type.
++	status := "in_progress"
++	switch evType {
++	case "response.completed":
++		status = "completed"
++	case "response.failed":
++		status = "failed"
++	case "response.incomplete":
++		status = "incomplete"
++	case "response.cancelled":
++		status = "cancelled"
++	case "response.queued":
++		status = "queued"
++	}
++	data, changed, err = setPassThroughFieldIfMissing(data, "response.status", status)
++	if err != nil {
++		return data, rewritten, err
++	}
++	rewritten = rewritten || changed
++
++	// output: empty array is the spec-mandated default.
++	data, changed, err = setPassThroughFieldIfMissing(data, "response.output", []any{})
++	if err != nil {
++		return data, rewritten, err
++	}
++	rewritten = rewritten || changed
++
++	// output[] items (e.g. reasoning items) also carry required per-type fields.
++	outputs := gjson.GetBytes(data, "response.output")
++	if outputs.IsArray() {
++		outputs.ForEach(func(key, _ gjson.Result) bool {
++			var itemErr error
++			data, changed, itemErr = normalizePassThroughOutputItem(data, "response.output."+key.String(), false)
++			if itemErr != nil {
++				err = itemErr
++				return false
++			}
++			rewritten = rewritten || changed
++			return true
++		})
++		if err != nil {
++			return data, rewritten, err
++		}
++	}
++
++	// usage: when present, its leaf fields are all required by async-openai.
++	if gjson.GetBytes(data, "response.usage").Exists() {
++		for _, field := range []struct {
++			path  string
++			value any
++		}{
++			{"response.usage.input_tokens", 0},
++			{"response.usage.output_tokens", 0},
++			{"response.usage.total_tokens", 0},
++			{"response.usage.input_tokens_details.cached_tokens", 0},
++			{"response.usage.output_tokens_details.reasoning_tokens", 0},
++		} {
++			data, changed, err = setPassThroughFieldIfMissing(data, field.path, field.value)
++			if err != nil {
++				return data, rewritten, err
++			}
++			rewritten = rewritten || changed
++		}
++	}
++
++	return data, rewritten, nil
++}
++
++// normalizePassThroughOutputItem ensures an output item (in output_item.added/done
++// events at prefix "item", or inside a response.output[] array) carries all fields
++// required by its type. prefix is the JSON path to the item, e.g. "item" or
++// "response.output.0".
++func normalizePassThroughOutputItem(data []byte, prefix string, isDone bool) ([]byte, bool, error) {
++	rewritten := false
++	itemType := gjson.GetBytes(data, prefix+".type").String()
++
++	var changed bool
++	var err error
++
++	switch itemType {
++	case "reasoning":
++		for _, field := range []struct {
++			name  string
++			value any
++		}{
++			{"summary", []any{}},
++			{"id", "rs_passthrough"},
++		} {
++			data, changed, err = setPassThroughFieldIfMissing(data, prefix+"."+field.name, field.value)
++			if err != nil {
++				return data, rewritten, err
++			}
++			rewritten = rewritten || changed
++		}
++	case "message":
++		status := "in_progress"
++		if isDone {
++			status = "completed"
++		}
++		for _, field := range []struct {
++			name  string
++			value any
++		}{
++			{"content", []any{}},
++			{"id", "msg_passthrough"},
++			{"role", "assistant"},
++			{"status", status},
++		} {
++			data, changed, err = setPassThroughFieldIfMissing(data, prefix+"."+field.name, field.value)
++			if err != nil {
++				return data, rewritten, err
++			}
++			rewritten = rewritten || changed
++		}
++	case "function_call":
++		for _, field := range []struct {
++			name  string
++			value any
++		}{
++			{"name", ""},
++			{"call_id", ""},
++			{"arguments", ""},
++			{"id", "fc_passthrough"},
++		} {
++			data, changed, err = setPassThroughFieldIfMissing(data, prefix+"."+field.name, field.value)
++			if err != nil {
++				return data, rewritten, err
++			}
++			rewritten = rewritten || changed
++		}
++	default:
++		// Other item types: at minimum ensure an id exists so enum/tagged
++		// deserialization does not fail on an anonymous item.
++		if !gjson.GetBytes(data, prefix+".id").Exists() {
++			data, changed, err = setPassThroughFieldIfMissing(data, prefix+".id", "item_passthrough")
++			if err != nil {
++				return data, rewritten, err
++			}
++			rewritten = rewritten || changed
++		}
++	}
++
++	return data, rewritten, nil
++}
++
++// normalizePassThroughContentPart ensures output_text parts carry annotations and text.
++func normalizePassThroughContentPart(data []byte) ([]byte, bool, error) {
++	rewritten := false
++	partType := gjson.GetBytes(data, "part.type").String()
++	if partType != "output_text" {
++		return data, rewritten, nil
++	}
++
++	var changed bool
++	var err error
++
++	for _, field := range []struct {
++		path  string
++		value any
++	}{
++		{"part.annotations", []any{}},
++		{"part.text", ""},
++	} {
++		data, changed, err = setPassThroughFieldIfMissing(data, field.path, field.value)
++		if err != nil {
++			return data, rewritten, err
++		}
++		rewritten = rewritten || changed
++	}
++
++	return data, rewritten, nil
++}
++
++// normalizePassThroughCommonEventFields ensures item_id/output_index/content_index
++// exist on delta/done events that carry them.
++func normalizePassThroughCommonEventFields(data []byte) ([]byte, bool, error) {
++	rewritten := false
++
++	var changed bool
++	var err error
++
++	for _, field := range []struct {
++		path  string
++		value any
++	}{
++		{"item_id", ""},
++		{"output_index", 0},
++		{"content_index", 0},
++	} {
++		data, changed, err = setPassThroughFieldIfMissing(data, field.path, field.value)
++		if err != nil {
++			return data, rewritten, err
++		}
++		rewritten = rewritten || changed
++	}
++
++	return data, rewritten, nil
 +}
 +
  // passThroughChannelStream wraps a channel as a Stream.
