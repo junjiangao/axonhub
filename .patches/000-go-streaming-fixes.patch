@@ -1,8 +1,8 @@
 diff --git a/internal/server/orchestrator/pass_through.go b/internal/server/orchestrator/pass_through.go
-index 67bab720..c124fb76 100644
+index 67bab720..02e91e9e 100644
 --- a/internal/server/orchestrator/pass_through.go
 +++ b/internal/server/orchestrator/pass_through.go
-@@ -1,11 +1,14 @@
+@@ -1,11 +1,15 @@
  package orchestrator
  
  import (
@@ -11,13 +11,14 @@ index 67bab720..c124fb76 100644
  	"fmt"
  	"net/http"
 +	"runtime/debug"
++	"strings"
  	"sync"
  
 +	"github.com/tidwall/gjson"
  	"github.com/tidwall/sjson"
  
  	"github.com/looplj/axonhub/internal/log"
-@@ -344,10 +347,17 @@ func captureRawProviderStream(outbound *PersistentOutboundTransformer, systemSer
+@@ -344,10 +348,17 @@ func captureRawProviderStream(outbound *PersistentOutboundTransformer, systemSer
  		go func() {
  			defer func() {
  				if r := recover(); r != nil {
@@ -38,21 +39,26 @@ index 67bab720..c124fb76 100644
  					rawStreamErr = fmt.Errorf("passthrough stream panic: %v", r)
  				} else {
  					rawStreamErr = stream.Err()
-@@ -436,10 +446,214 @@ func applyPassThroughStream(outbound *PersistentOutboundTransformer, systemServi
+@@ -436,10 +447,267 @@ func applyPassThroughStream(outbound *PersistentOutboundTransformer, systemServi
  			stream.Close()
  		}()
  
 -		return &passThroughChannelStream{ctx: ctx, ch: rawCh, errRef: errRef, cancel: cancel}, nil
 +		rawStream := &passThroughChannelStream{ctx: ctx, ch: rawCh, errRef: errRef, cancel: cancel}
 +		// Chain the raw-byte normalizations applied to pass-through chunks:
-+		// finish_reason:"" -> null, tool_calls delta function name:"" -> null, and
-+		// response.created status:"" -> "in_progress" and output:null -> [].
++		// finish_reason:"" -> null, tool_calls delta function name:"" -> null,
++		// response.created status:"" -> "in_progress" and output:null -> [], and
++		// Responses events missing sequence_number get a monotonically increasing one.
++		sequenceNumber := 0
 +		return streams.Map(
 +			streams.Map(
-+				streams.Map(streams.Map(rawStream, normalizePassThroughFinishReason), normalizePassThroughToolCallName),
-+				normalizePassThroughResponseStatus,
++				streams.Map(
++					streams.Map(streams.Map(rawStream, normalizePassThroughFinishReason), normalizePassThroughToolCallName),
++					normalizePassThroughResponseStatus,
++				),
++				normalizePassThroughResponseOutput,
 +			),
-+			normalizePassThroughResponseOutput,
++			normalizePassThroughSequenceNumber(&sequenceNumber),
 +		), nil
  	})
  }
@@ -249,6 +255,54 @@ index 67bab720..c124fb76 100644
 +	next.Data = body
 +
 +	return &next
++}
++
++// normalizePassThroughSequenceNumber returns a stateful normalizer that injects a
++// monotonically increasing sequence_number into Responses API stream events that
++// omit it. The Responses API spec requires every SSE event to carry a
++// sequence_number (an integer starting at 0, incrementing by 1 per event), but
++// some providers (e.g. UnionTech) omit the field entirely, so strict clients
++// (e.g. Grok) fail to deserialize the event with "missing field sequence_number".
++// Injecting 0,1,2,... on each event that lacks the field makes the pass-through
++// stream spec-compliant while leaving all other bytes untouched. Events that
++// already carry a sequence_number are passed through unchanged, and the injected
++// counter stays aligned with the largest sequence_number seen so a
++// partially-compliant upstream does not create gaps.
++func normalizePassThroughSequenceNumber(seq *int) func(*httpclient.StreamEvent) *httpclient.StreamEvent {
++	return func(ev *httpclient.StreamEvent) *httpclient.StreamEvent {
++		if ev == nil || len(ev.Data) == 0 {
++			return ev
++		}
++
++		// Fast path: only Responses API events carry a sequence_number. Chat
++		// completion chunks must never be rewritten.
++		evType := gjson.GetBytes(ev.Data, "type").String()
++		if !strings.HasPrefix(evType, "response.") && evType != "error" {
++			return ev
++		}
++
++		// Keep the counter aligned with events that already carry a value, so a
++		// provider that emits sequence_number on some events but not others still
++		// produces a continuous stream.
++		if existing := gjson.GetBytes(ev.Data, "sequence_number"); existing.Exists() {
++			if n := existing.Int(); n >= int64(*seq) {
++				*seq = int(n) + 1
++			}
++
++			return ev
++		}
++
++		body, err := sjson.SetBytes(ev.Data, "sequence_number", *seq)
++		if err != nil {
++			return ev
++		}
++		*seq++
++
++		next := *ev
++		next.Data = body
++
++		return &next
++	}
 +}
 +
  // passThroughChannelStream wraps a channel as a Stream.
