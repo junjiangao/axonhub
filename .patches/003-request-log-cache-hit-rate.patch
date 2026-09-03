@@ -1,8 +1,8 @@
 diff --git a/frontend/src/features/requests/components/requests-columns.tsx b/frontend/src/features/requests/components/requests-columns.tsx
-index f02919e6..ae6a9c1f 100644
+index 3b2e76a0..ca0d4494 100644
 --- a/frontend/src/features/requests/components/requests-columns.tsx
 +++ b/frontend/src/features/requests/components/requests-columns.tsx
-@@ -431,15 +431,22 @@ export function useRequestsColumns(options?: UseRequestsColumnsOptions): ColumnD
+@@ -461,15 +461,22 @@ export function useRequestsColumns(options?: UseRequestsColumnsOptions): ColumnD
  
          const hitRate = promptTokens > 0 ? (cachedTokens / promptTokens) * 100 : 0;
          const isLowHitRate = hitRate < 80 && promptTokens >= 40000;
@@ -27,7 +27,7 @@ index f02919e6..ae6a9c1f 100644
            </div>
          );
        },
-@@ -472,11 +479,11 @@ export function useRequestsColumns(options?: UseRequestsColumnsOptions): ColumnD
+@@ -502,11 +509,11 @@ export function useRequestsColumns(options?: UseRequestsColumnsOptions): ColumnD
          return (
            <div className='text-xs'>
              <div className='text-sm font-medium'>{writeCachedTokens.toLocaleString()}</div>
@@ -42,7 +42,7 @@ index f02919e6..ae6a9c1f 100644
          );
        },
 diff --git a/frontend/src/locales/en/requests.json b/frontend/src/locales/en/requests.json
-index 842ccf2b..b6d660ca 100644
+index e8da7851..f21d7093 100644
 --- a/frontend/src/locales/en/requests.json
 +++ b/frontend/src/locales/en/requests.json
 @@ -8,8 +8,6 @@
@@ -55,7 +55,7 @@ index 842ccf2b..b6d660ca 100644
    "requests.columns.passThrough": "Pass-through",
    "requests.columns.reasoningEffort": "Reasoning Effort",
 diff --git a/frontend/src/locales/zh-CN/requests.json b/frontend/src/locales/zh-CN/requests.json
-index ced82dc4..08585ab2 100644
+index 12404c1d..3491d342 100644
 --- a/frontend/src/locales/zh-CN/requests.json
 +++ b/frontend/src/locales/zh-CN/requests.json
 @@ -8,8 +8,6 @@

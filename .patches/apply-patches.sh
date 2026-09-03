@@ -9,12 +9,10 @@ set -euo pipefail
 
 PATCHES_DIR="$(cd "$(dirname "$0")" && pwd)"
 PATCHES=(
-  "000-go-streaming-fixes.patch"
-  "004-local-changes.patch"
-  "005-request-log-cache-hit-rate.patch"
-  "006-channel-proxy-direct-by-default.patch"
-  "007-responses-item-status.patch"
-  "008-pass-through-response-message-id.patch"
+  "001-upstream-protocol-compat.patch"
+  "002-local-changes.patch"
+  "003-request-log-cache-hit-rate.patch"
+  "004-channel-proxy-direct-by-default.patch"
 )
 
 echo ">>> 应用本地补丁到 $(git branch --show-current)..."

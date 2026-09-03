@@ -1,8 +1,8 @@
 diff --git a/internal/server/orchestrator/pass_through.go b/internal/server/orchestrator/pass_through.go
-index 67bab720..ecdfe554 100644
+index 67bab720..ec11cd44 100644
 --- a/internal/server/orchestrator/pass_through.go
 +++ b/internal/server/orchestrator/pass_through.go
-@@ -1,11 +1,14 @@
+@@ -1,11 +1,15 @@
  package orchestrator
  
  import (
@@ -11,13 +11,132 @@ index 67bab720..ecdfe554 100644
  	"fmt"
  	"net/http"
 +	"runtime/debug"
++	"sort"
  	"sync"
  
 +	"github.com/tidwall/gjson"
  	"github.com/tidwall/sjson"
  
  	"github.com/looplj/axonhub/internal/log"
-@@ -344,10 +347,17 @@ func captureRawProviderStream(outbound *PersistentOutboundTransformer, systemSer
+@@ -124,6 +128,14 @@ func applyPassThroughRequestBody(outbound *PersistentOutboundTransformer, system
+ 			return request, nil
+ 		}
+ 
++		// Strict Responses providers require message ids to start
++		// with "msg_" and message content to carry non-empty text; normalize the
++		// pass-through payload accordingly so it stays spec-compliant.
++		if llmReq.APIFormat == llm.APIFormatOpenAIResponse ||
++			llmReq.APIFormat == llm.APIFormatOpenAIResponseCompact {
++			body = normalizePassThroughResponseMessages(body)
++		}
++
+ 		request.Body = body
+ 		outbound.state.PassThroughApplied = true
+ 
+@@ -191,6 +203,102 @@ func mergePassThroughRequestBody(rawBody []byte, apiFormat llm.APIFormat, model
+ 	return nextBody, nil
+ }
+ 
++// normalizePassThroughResponseMessages normalizes an OpenAI Responses
++// pass-through body so strict providers accept it:
++//   - message ids must start with "msg_"; clients (e.g. coding agents) may
++//     generate their own id formats (bare hex, uuids). Rewriting the id
++//     (rather than dropping it) keeps the client's id space intact.
++//   - message items whose content carries no non-empty text (empty text
++//     parts, empty content arrays, empty string content) are stripped or
++//     dropped, because strict providers reject them with a 400001
++//     invalid_request_error (missing input.content.text). Empty text parts
++//     are removed; if no content remains, the whole message item is dropped.
++func normalizePassThroughResponseMessages(body []byte) []byte {
++	result := gjson.GetBytes(body, "input")
++	if !result.IsArray() {
++		return body
++	}
++
++	next := body
++	var dropParts []struct{ item, part int } // content parts to remove
++	var dropItems []int                      // message items to remove entirely
++
++	result.ForEach(func(key, value gjson.Result) bool {
++		if value.Get("type").String() != "message" {
++			return true
++		}
++
++		itemIdx := int(key.Int())
++
++		// Rewrite non-conforming message ids.
++		id := value.Get("id")
++		if id.Type == gjson.String && id.String() != "" && !strings.HasPrefix(id.String(), "msg_") {
++			var err error
++			next, err = sjson.SetBytes(next, "input."+key.String()+".id", "msg_"+id.String())
++			if err != nil {
++				return false
++			}
++		}
++
++		// Strip empty-text content parts; drop the item when nothing remains.
++		content := value.Get("content")
++		switch {
++		case content.Type == gjson.String && strings.TrimSpace(content.String()) == "":
++			dropItems = append(dropItems, itemIdx)
++		case content.IsArray():
++			parts := content.Array()
++			var emptyParts []int
++			for i, part := range parts {
++				partType := part.Get("type").String()
++				if partType != "input_text" && partType != "output_text" {
++					continue
++				}
++				if strings.TrimSpace(part.Get("text").String()) == "" {
++					emptyParts = append(emptyParts, i)
++				}
++			}
++			switch {
++			case len(parts) == 0:
++				dropItems = append(dropItems, itemIdx)
++			case len(emptyParts) == len(parts):
++				dropItems = append(dropItems, itemIdx)
++			default:
++				for _, i := range emptyParts {
++					dropParts = append(dropParts, struct{ item, part int }{itemIdx, i})
++				}
++			}
++		}
++
++		return true
++	})
++
++	// Apply part removals with descending item/part indices so earlier indices stay valid.
++	sort.Slice(dropParts, func(a, b int) bool {
++		if dropParts[a].item != dropParts[b].item {
++			return dropParts[a].item > dropParts[b].item
++		}
++		return dropParts[a].part > dropParts[b].part
++	})
++	for _, r := range dropParts {
++		var err error
++		next, err = sjson.DeleteBytes(next, fmt.Sprintf("input.%d.content.%d", r.item, r.part))
++		if err != nil {
++			return body
++		}
++	}
++
++	sort.Sort(sort.Reverse(sort.IntSlice(dropItems)))
++	for _, i := range dropItems {
++		var err error
++		next, err = sjson.DeleteBytes(next, fmt.Sprintf("input.%d", i))
++		if err != nil {
++			return body
++		}
++	}
++
++	return next
++}
++
+ // passThroughBodySupported reports whether the raw inbound body can safely replace the
+ // outbound request body. Multipart formats are excluded.
+ func passThroughBodySupported(apiFormat llm.APIFormat) bool {
+@@ -344,10 +452,17 @@ func captureRawProviderStream(outbound *PersistentOutboundTransformer, systemSer
  		go func() {
  			defer func() {
  				if r := recover(); r != nil {
@@ -38,7 +157,7 @@ index 67bab720..ecdfe554 100644
  					rawStreamErr = fmt.Errorf("passthrough stream panic: %v", r)
  				} else {
  					rawStreamErr = stream.Err()
-@@ -436,10 +446,135 @@ func applyPassThroughStream(outbound *PersistentOutboundTransformer, systemServi
+@@ -436,8 +551,133 @@ func applyPassThroughStream(outbound *PersistentOutboundTransformer, systemServi
  			stream.Close()
  		}()
  
@@ -52,9 +171,9 @@ index 67bab720..ecdfe554 100644
 +			streams.Map(rawStream, normalizePassThroughFinishReason),
 +			normalizePassThroughToolCallName,
 +		), nil
- 	})
- }
- 
++	})
++}
++
 +// normalizePassThroughFinishReason rewrites an empty finish_reason string to null
 +// in chat completion stream chunks delivered through pass-through. Some providers
 +// (e.g. Sensenova) emit finish_reason:"" on every content chunk. That empty string
@@ -110,7 +229,7 @@ index 67bab720..ecdfe554 100644
 +
 +// normalizePassThroughToolCallName rewrites an empty tool-call function name
 +// string to null in chat completion stream chunks delivered through pass-through.
-+// Some providers (e.g. UnionTech) emit the tool-call delta's function name only on
++// Some providers emit the tool-call delta's function name only on
 +// the first chunk and then repeat name:"" on every subsequent arguments chunk. An
 +// empty string is not a valid function name per the OpenAI spec (intermediate chunks
 +// must omit it or use null), so strict clients (e.g. Grok) fail to deserialize the
@@ -160,7 +279,7 @@ index 67bab720..ecdfe554 100644
 +		})
 +
 +		return true
-+	})
+ 	})
 +
 +	if !rewritten {
 +		return ev
@@ -170,11 +289,9 @@ index 67bab720..ecdfe554 100644
 +	next.Data = body
 +
 +	return &next
-+}
-+
+ }
+ 
  // passThroughChannelStream wraps a channel as a Stream.
- //
- //nolint:containedctx // Required so Next() can observe request cancellation.
 diff --git a/llm/httpclient/decoder.go b/llm/httpclient/decoder.go
 index 514d0e57..a0fabce9 100644
 --- a/llm/httpclient/decoder.go
@@ -337,3 +454,39 @@ index 6112fddf..da2d5e7b 100644
  // isReasoningSignatureEvent checks if the response contains ONLY ReasoningSignature.
  // This is a helper function to filter out reasoning signature events when transforming
  // to OpenAI format, since OpenAI format doesn't support ReasoningSignature in streaming.
+diff --git a/llm/transformer/openai/responses/outbound_convert.go b/llm/transformer/openai/responses/outbound_convert.go
+index f4b24282..d5d5fd60 100644
+--- a/llm/transformer/openai/responses/outbound_convert.go
++++ b/llm/transformer/openai/responses/outbound_convert.go
+@@ -226,6 +226,7 @@ func convertAssistantMessage(msg llm.Message) []Item {
+ 		items = append(items, Item{
+ 			ID:               reasoningItem.ID,
+ 			Type:             "reasoning",
++			Status:           lo.ToPtr("completed"),
+ 			EncryptedContent: encryptedContent,
+ 			Summary:          summary,
+ 		})
+@@ -238,6 +239,7 @@ func convertAssistantMessage(msg llm.Message) []Item {
+ 				Type:   "custom_tool_call",
+ 				CallID: tc.ResponseCustomToolCall.CallID,
+ 				Name:   tc.ResponseCustomToolCall.Name,
++				Status: lo.ToPtr("completed"),
+ 				Input:  lo.ToPtr(tc.ResponseCustomToolCall.Input),
+ 			})
+ 		} else {
+@@ -247,6 +249,7 @@ func convertAssistantMessage(msg llm.Message) []Item {
+ 				Name:      tc.Function.Name,
+ 				Namespace: tc.Function.Namespace,
+ 				Arguments: tc.Function.Arguments,
++				Status:    lo.ToPtr("completed"),
+ 			})
+ 		}
+ 	}
+@@ -347,6 +350,7 @@ func convertToolMessageWithType(msg llm.Message, itemType string) Item {
+ 	return Item{
+ 		Type:   itemType,
+ 		CallID: lo.FromPtr(msg.ToolCallID),
++		Status: lo.ToPtr("completed"),
+ 		Output: &output,
+ 	}
+ }
