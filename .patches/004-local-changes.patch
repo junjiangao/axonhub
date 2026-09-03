@@ -1,9 +1,9 @@
 diff --git a/Dockerfile b/Dockerfile
-index c8298239..34e46a8a 100644
+index bebea978..e6a3081b 100644
 --- a/Dockerfile
 +++ b/Dockerfile
 @@ -1,6 +1,8 @@
- FROM --platform=$BUILDPLATFORM node:20-alpine AS frontend-builder
+ FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend-builder
  
  WORKDIR /build
 +ENV COREPACK_NPM_REGISTRY=https://registry.npmmirror.com \
