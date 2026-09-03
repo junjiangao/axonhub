@@ -48,7 +48,7 @@ index c8298239..34e46a8a 100644
      && adduser -S -D -H -u 65532 -G axonhub axonhub
  
 diff --git a/docker-compose.yml b/docker-compose.yml
-index e79858a8..0909a019 100644
+index e79858a8..6b0e1c4c 100644
 --- a/docker-compose.yml
 +++ b/docker-compose.yml
 @@ -15,15 +15,27 @@
@@ -79,7 +79,7 @@ index e79858a8..0909a019 100644
      volumes:
        - postgres_data:/var/lib/postgresql/data
      networks:
-@@ -50,11 +62,17 @@ services:
+@@ -50,11 +62,25 @@ services:
  
    # AxonHub 主服务
    axonhub:
@@ -94,6 +94,22 @@ index e79858a8..0909a019 100644
        AXONHUB_DB_DIALECT: postgres
        AXONHUB_DB_DSN: "postgres://axonhub:${DB_PASSWORD:?DB_PASSWORD must be set}@postgres:5432/axonhub?sslmode=disable"
 +      TZ: ${TZ:-Asia/Shanghai}
++      # 出站代理：仅影响依赖环境变量代理的调用（版本检查、模型目录拉取、GitHub 相关）。
++      # 渠道未显式配置代理时保持直连，不受这些变量影响。
++      # 使用 AXONHUB_ 前缀变量名，避免被宿主机 shell 已导出的 HTTP_PROXY 等覆盖。
++      HTTP_PROXY: ${AXONHUB_HTTP_PROXY:-}
++      HTTPS_PROXY: ${AXONHUB_HTTPS_PROXY:-}
++      NO_PROXY: ${AXONHUB_NO_PROXY:-localhost,127.0.0.1,::1,postgres,172.18.0.0/16,172.19.0.0/16}
++    extra_hosts:
++      - "host.docker.internal:host-gateway"
      ports:
        - "${AXONHUB_BIND_ADDRESS:-127.0.0.1}:${AXONHUB_HOST_PORT:-8090}:8090"
      volumes:
+@@ -95,6 +121,7 @@ services:
+         [
+           "CMD",
+           "wget",
++          "--proxy=off",
+           "--no-verbose",
+           "--tries=1",
+           "--spider",
