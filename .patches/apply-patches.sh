@@ -31,6 +31,12 @@ if [ "$MISSING" -gt 0 ]; then
   exit 1
 fi
 
+REPO_ROOT="$(cd "$PATCHES_DIR/.." && pwd)"
+if [ -f "$REPO_ROOT/docker-compose-local" ]; then
+  cp -- "$REPO_ROOT/docker-compose-local" "$REPO_ROOT/docker-compose.override.yml"
+  echo "  [✓] 已从 docker-compose-local 生成 docker-compose.override.yml"
+fi
+
 for PATCH in "${PATCHES[@]}"; do
   PATCH_FILE="$PATCHES_DIR/$PATCH"
   if [ ! -f "$PATCH_FILE" ]; then
