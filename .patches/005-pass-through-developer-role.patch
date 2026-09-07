@@ -1,5 +1,5 @@
 diff --git a/internal/server/orchestrator/pass_through.go b/internal/server/orchestrator/pass_through.go
-index 9130bb90..a46535f7 100644
+index 9130bb9..a46535f 100644
 --- a/internal/server/orchestrator/pass_through.go
 +++ b/internal/server/orchestrator/pass_through.go
 @@ -8,6 +8,7 @@ import (
@@ -83,10 +83,10 @@ index 9130bb90..a46535f7 100644
  // pass-through body so strict providers accept it:
  //   - message ids must start with "msg_"; clients (e.g. coding agents) may
 diff --git a/internal/server/orchestrator/pass_through_test.go b/internal/server/orchestrator/pass_through_test.go
-index ae41031e..3d0dcd46 100644
+index ae41031..6ce0840 100644
 --- a/internal/server/orchestrator/pass_through_test.go
 +++ b/internal/server/orchestrator/pass_through_test.go
-@@ -2185,3 +2185,158 @@ func TestApplyPassThroughBodyAppliesSpeechModelPatch(t *testing.T) {
+@@ -2185,3 +2185,157 @@ func TestApplyPassThroughBodyAppliesSpeechModelPatch(t *testing.T) {
  	require.Equal(t, "tts-1-hd", gjson.GetBytes(processed.Body, "model").String())
  	require.Equal(t, "alloy", gjson.GetBytes(processed.Body, "voice").String())
  }
@@ -244,4 +244,3 @@ index ae41031e..3d0dcd46 100644
 +	require.Equal(t, "developer", gjson.GetBytes(processed.Body, "messages.0.role").String())
 +	require.Equal(t, 0.4, gjson.GetBytes(processed.Body, "temperature").Float())
 +}
-+
