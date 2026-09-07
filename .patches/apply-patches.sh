@@ -13,6 +13,7 @@ PATCHES=(
   "002-local-changes.patch"
   "003-request-log-cache-hit-rate.patch"
   "004-channel-proxy-direct-by-default.patch"
+  "005-pass-through-developer-role.patch"
 )
 
 echo ">>> 应用本地补丁到 $(git branch --show-current)..."
