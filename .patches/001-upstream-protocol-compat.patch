@@ -457,7 +457,7 @@ index 867ca0ed..9f9a1de4 100644
  // This is a helper function to filter out reasoning signature events when transforming
  // to OpenAI format, since OpenAI format doesn't support ReasoningSignature in streaming.
 diff --git a/llm/transformer/openai/responses/outbound_convert.go b/llm/transformer/openai/responses/outbound_convert.go
-index 0f73b85e..9557cd7c 100644
+index 69f74eaf..54efa5e5 100644
 --- a/llm/transformer/openai/responses/outbound_convert.go
 +++ b/llm/transformer/openai/responses/outbound_convert.go
 @@ -253,6 +253,7 @@ func convertAssistantMessage(msg llm.Message) []Item {
@@ -477,7 +477,7 @@ index 0f73b85e..9557cd7c 100644
  			})
  		} else {
 @@ -274,6 +276,7 @@ func convertAssistantMessage(msg llm.Message) []Item {
- 				Name:      tc.Function.Name,
+ 				Name:      localFunctionName(tc.Function.Namespace, tc.Function.Name),
  				Namespace: tc.Function.Namespace,
  				Arguments: tc.Function.Arguments,
 +				Status:    lo.ToPtr("completed"),
