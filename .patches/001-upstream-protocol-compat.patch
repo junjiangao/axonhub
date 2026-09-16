@@ -1,8 +1,8 @@
 diff --git a/internal/server/orchestrator/pass_through.go b/internal/server/orchestrator/pass_through.go
-index 7d5463ba..9130bb90 100644
+index 7d5463b..3a5248c 100644
 --- a/internal/server/orchestrator/pass_through.go
 +++ b/internal/server/orchestrator/pass_through.go
-@@ -1,13 +1,17 @@
+@@ -1,6 +1,7 @@
  package orchestrator
  
  import (
@@ -10,9 +10,7 @@ index 7d5463ba..9130bb90 100644
  	"context"
  	"fmt"
  	"mime"
- 	"net/http"
-+	"runtime/debug"
-+	"sort"
+@@ -8,6 +9,7 @@ import (
  	"strings"
  	"sync"
  
@@ -20,146 +18,7 @@ index 7d5463ba..9130bb90 100644
  	"github.com/tidwall/sjson"
  
  	"github.com/looplj/axonhub/internal/log"
-@@ -126,6 +130,14 @@ func applyPassThroughRequestBody(outbound *PersistentOutboundTransformer, system
- 			return request, nil
- 		}
- 
-+		// Strict Responses providers require message ids to start
-+		// with "msg_" and message content to carry non-empty text; normalize the
-+		// pass-through payload accordingly so it stays spec-compliant.
-+		if llmReq.APIFormat == llm.APIFormatOpenAIResponse ||
-+			llmReq.APIFormat == llm.APIFormatOpenAIResponseCompact {
-+			body = normalizePassThroughResponseMessages(body)
-+		}
-+
- 		request.Body = body
- 
- 		// The replayed body keeps the inbound media type: sync Content-Type so a JSON
-@@ -205,6 +217,102 @@ func mergePassThroughRequestBody(rawBody []byte, apiFormat llm.APIFormat, model
- 	return nextBody, nil
- }
- 
-+// normalizePassThroughResponseMessages normalizes an OpenAI Responses
-+// pass-through body so strict providers accept it:
-+//   - message ids must start with "msg_"; clients (e.g. coding agents) may
-+//     generate their own id formats (bare hex, uuids). Rewriting the id
-+//     (rather than dropping it) keeps the client's id space intact.
-+//   - message items whose content carries no non-empty text (empty text
-+//     parts, empty content arrays, empty string content) are stripped or
-+//     dropped, because strict providers reject them with a 400001
-+//     invalid_request_error (missing input.content.text). Empty text parts
-+//     are removed; if no content remains, the whole message item is dropped.
-+func normalizePassThroughResponseMessages(body []byte) []byte {
-+	result := gjson.GetBytes(body, "input")
-+	if !result.IsArray() {
-+		return body
-+	}
-+
-+	next := body
-+	var dropParts []struct{ item, part int } // content parts to remove
-+	var dropItems []int                      // message items to remove entirely
-+
-+	result.ForEach(func(key, value gjson.Result) bool {
-+		if value.Get("type").String() != "message" {
-+			return true
-+		}
-+
-+		itemIdx := int(key.Int())
-+
-+		// Rewrite non-conforming message ids.
-+		id := value.Get("id")
-+		if id.Type == gjson.String && id.String() != "" && !strings.HasPrefix(id.String(), "msg_") {
-+			var err error
-+			next, err = sjson.SetBytes(next, "input."+key.String()+".id", "msg_"+id.String())
-+			if err != nil {
-+				return false
-+			}
-+		}
-+
-+		// Strip empty-text content parts; drop the item when nothing remains.
-+		content := value.Get("content")
-+		switch {
-+		case content.Type == gjson.String && strings.TrimSpace(content.String()) == "":
-+			dropItems = append(dropItems, itemIdx)
-+		case content.IsArray():
-+			parts := content.Array()
-+			var emptyParts []int
-+			for i, part := range parts {
-+				partType := part.Get("type").String()
-+				if partType != "input_text" && partType != "output_text" {
-+					continue
-+				}
-+				if strings.TrimSpace(part.Get("text").String()) == "" {
-+					emptyParts = append(emptyParts, i)
-+				}
-+			}
-+			switch {
-+			case len(parts) == 0:
-+				dropItems = append(dropItems, itemIdx)
-+			case len(emptyParts) == len(parts):
-+				dropItems = append(dropItems, itemIdx)
-+			default:
-+				for _, i := range emptyParts {
-+					dropParts = append(dropParts, struct{ item, part int }{itemIdx, i})
-+				}
-+			}
-+		}
-+
-+		return true
-+	})
-+
-+	// Apply part removals with descending item/part indices so earlier indices stay valid.
-+	sort.Slice(dropParts, func(a, b int) bool {
-+		if dropParts[a].item != dropParts[b].item {
-+			return dropParts[a].item > dropParts[b].item
-+		}
-+		return dropParts[a].part > dropParts[b].part
-+	})
-+	for _, r := range dropParts {
-+		var err error
-+		next, err = sjson.DeleteBytes(next, fmt.Sprintf("input.%d.content.%d", r.item, r.part))
-+		if err != nil {
-+			return body
-+		}
-+	}
-+
-+	sort.Sort(sort.Reverse(sort.IntSlice(dropItems)))
-+	for _, i := range dropItems {
-+		var err error
-+		next, err = sjson.DeleteBytes(next, fmt.Sprintf("input.%d", i))
-+		if err != nil {
-+			return body
-+		}
-+	}
-+
-+	return next
-+}
-+
- // passThroughBodySupported reports whether the raw inbound body can safely replace the
- // outbound request body. Multipart bodies cannot be reused: the outbound transformer
- // rebuilds the multipart payload with a new boundary in Content-Type, so replaying the
-@@ -382,10 +490,17 @@ func captureRawProviderStream(outbound *PersistentOutboundTransformer, systemSer
- 		go func() {
- 			defer func() {
- 				if r := recover(); r != nil {
--					log.Warn(ctx, "captureRawProviderStream goroutine panicked, recovering",
-+					fields := []log.Field{
- 						log.Any("panic", r),
--						log.String("channel", channel.Name),
--					)
-+						log.String("stack", string(debug.Stack())),
-+					}
-+					if channel != nil {
-+						fields = append(fields,
-+							log.String("channel", channel.Name),
-+							log.Int("channel_id", channel.ID),
-+						)
-+					}
-+					log.Warn(ctx, "captureRawProviderStream goroutine panicked, recovering", fields...)
- 					rawStreamErr = fmt.Errorf("passthrough stream panic: %v", r)
- 				} else {
- 					rawStreamErr = stream.Err()
-@@ -474,8 +589,133 @@ func applyPassThroughStream(outbound *PersistentOutboundTransformer, systemServi
+@@ -474,10 +476,134 @@ func applyPassThroughStream(outbound *PersistentOutboundTransformer, systemServi
  			stream.Close()
  		}()
  
@@ -167,15 +26,14 @@ index 7d5463ba..9130bb90 100644
 +		rawStream := &passThroughChannelStream{ctx: ctx, ch: rawCh, errRef: errRef, cancel: cancel}
 +		// Chain the raw-byte normalizations applied to pass-through chunks:
 +		// finish_reason:"" -> null and tool_calls delta function name:"" -> null.
-+		// Responses-API field injection was dropped with the strict Responses
-+		// client (Grok) moving back to the chat-completion protocol.
++		// These normalizations apply to Chat Completions pass-through chunks.
 +		return streams.Map(
 +			streams.Map(rawStream, normalizePassThroughFinishReason),
 +			normalizePassThroughToolCallName,
 +		), nil
-+	})
-+}
-+
+ 	})
+ }
+ 
 +// normalizePassThroughFinishReason rewrites an empty finish_reason string to null
 +// in chat completion stream chunks delivered through pass-through. Some providers
 +// (e.g. Sensenova) emit finish_reason:"" on every content chunk. That empty string
@@ -281,7 +139,7 @@ index 7d5463ba..9130bb90 100644
 +		})
 +
 +		return true
- 	})
++	})
 +
 +	if !rewritten {
 +		return ev
@@ -291,204 +149,8 @@ index 7d5463ba..9130bb90 100644
 +	next.Data = body
 +
 +	return &next
- }
- 
++}
++
  // passThroughChannelStream wraps a channel as a Stream.
-diff --git a/llm/httpclient/decoder.go b/llm/httpclient/decoder.go
-index 514d0e57..a0fabce9 100644
---- a/llm/httpclient/decoder.go
-+++ b/llm/httpclient/decoder.go
-@@ -8,6 +8,7 @@ import (
- 	"fmt"
- 	"io"
- 	"log/slog"
-+	"runtime/debug"
- 
- 	"sync"
- 	"sync/atomic"
-@@ -152,7 +153,18 @@ func (s *defaultSSEDecoder) Next() bool {
- 	default:
- 	}
- 
--	event, err := s.sseStream.Recv()
-+	event, err := func() (ev sse.Event, err error) {
-+		defer func() {
-+			if r := recover(); r != nil {
-+				slog.ErrorContext(s.ctx, "SSE decoder panicked in Recv",
-+					slog.Any("panic", r),
-+					slog.String("stack", string(debug.Stack())),
-+				)
-+				err = fmt.Errorf("sse decoder panic: %v", r)
-+			}
-+		}()
-+		return s.sseStream.Recv()
-+	}()
- 	if err != nil {
- 		if errors.Is(err, io.EOF) {
- 			slog.DebugContext(s.ctx, "SSE stream closed")
-diff --git a/llm/transformer/openai/inbound.go b/llm/transformer/openai/inbound.go
-index 867ca0ed..9f9a1de4 100644
---- a/llm/transformer/openai/inbound.go
-+++ b/llm/transformer/openai/inbound.go
-@@ -14,6 +14,7 @@ import (
- 	"github.com/looplj/axonhub/llm/internal/pkg/xjson"
- 	"github.com/looplj/axonhub/llm/streams"
- 	transformer "github.com/looplj/axonhub/llm/transformer"
-+	"github.com/samber/lo"
- )
- 
- // InboundTransformer implements transformer.Inbound for OpenAI format.
-@@ -105,9 +106,11 @@ func (t *InboundTransformer) TransformStream(
- 	ctx context.Context,
- 	stream streams.Stream[*llm.Response],
- ) (streams.Stream[*httpclient.StreamEvent], error) {
--	return streams.NoNil(streams.MapErr(stream, func(chunk *llm.Response) (*httpclient.StreamEvent, error) {
--		return t.TransformStreamChunk(ctx, chunk)
--	})), nil
-+	return streams.NoNil(&openAIInboundStream{
-+		source: stream,
-+		ctx:    ctx,
-+		t:      t,
-+	}), nil
- }
- 
- func (t *InboundTransformer) TransformStreamChunk(
-@@ -131,6 +134,9 @@ func (t *InboundTransformer) TransformStreamChunk(
- 		return nil, nil
- 	}
- 
-+	// finish_reason synthesis is handled at the stream level by openAIInboundStream.
-+	// See ensureStreamFinishReason.
-+
- 	// Convert to OpenAI Response format
- 	oaiResp := ResponseFromLLM(chatResp)
- 
-@@ -146,6 +152,92 @@ func (t *InboundTransformer) TransformStreamChunk(
- 	}, nil
- }
- 
-+// openAIInboundStream is a stateful stream that synthesizes finish_reason
-+// for upstream providers that omit it (e.g. glm-5.1).
-+//
-+//nolint:containedctx // Checked.
-+type openAIInboundStream struct {
-+	source streams.Stream[*llm.Response]
-+	ctx    context.Context
-+	t      *InboundTransformer
-+
-+	// hasSeenToolCalls tracks whether any prior chunk contained tool calls,
-+	// used to infer the correct finish_reason for usage-only terminal chunks.
-+	hasSeenToolCalls    bool
-+	hasSeenFinishReason bool
-+
-+	current *httpclient.StreamEvent
-+	err     error
-+}
-+
-+func (s *openAIInboundStream) Next() bool {
-+	for s.source.Next() {
-+		chunk := s.source.Current()
-+		// Synthesize finish_reason before transforming the chunk.
-+		ensureStreamFinishReason(chunk, &s.hasSeenToolCalls, &s.hasSeenFinishReason)
-+		event, err := s.t.TransformStreamChunk(s.ctx, chunk)
-+		if err != nil {
-+			s.err = err
-+			return false
-+		}
-+		if event == nil {
-+			continue
-+		}
-+		s.current = event
-+		return true
-+	}
-+	return false
-+}
-+
-+func (s *openAIInboundStream) Current() *httpclient.StreamEvent {
-+	return s.current
-+}
-+
-+func (s *openAIInboundStream) Err() error {
-+	if s.err != nil {
-+		return s.err
-+	}
-+	return s.source.Err()
-+}
-+
-+func (s *openAIInboundStream) Close() error {
-+	return s.source.Close()
-+}
-+
-+// ensureStreamFinishReason synthesizes finish_reason only for a terminal
-+// usage-only chunk. Regular content and tool-call chunks remain non-terminal.
-+// hasSeenToolCalls determines whether the terminal reason is "tool_calls" or
-+// "stop" when the upstream provider omits finish_reason.
-+func ensureStreamFinishReason(resp *llm.Response, hasSeenToolCalls, hasSeenFinishReason *bool) {
-+	if resp == nil {
-+		return
-+	}
-+
-+	for i := range resp.Choices {
-+		c := &resp.Choices[i]
-+		if c.FinishReason != nil && *c.FinishReason != "" {
-+			*hasSeenFinishReason = true
-+		}
-+		if c.Delta == nil || len(c.Delta.ToolCalls) == 0 {
-+			continue
-+		}
-+		*hasSeenToolCalls = true
-+	}
-+
-+	if !*hasSeenFinishReason && len(resp.Choices) == 0 && resp.Usage != nil {
-+		reason := "stop"
-+		if *hasSeenToolCalls {
-+			reason = "tool_calls"
-+		}
-+		resp.Choices = append(resp.Choices, llm.Choice{
-+			Index:        0,
-+			Delta:        &llm.Message{},
-+			FinishReason: lo.ToPtr(reason),
-+		})
-+		*hasSeenFinishReason = true
-+	}
-+}
-+
- // isReasoningSignatureEvent checks if the response contains ONLY ReasoningSignature.
- // This is a helper function to filter out reasoning signature events when transforming
- // to OpenAI format, since OpenAI format doesn't support ReasoningSignature in streaming.
-diff --git a/llm/transformer/openai/responses/outbound_convert.go b/llm/transformer/openai/responses/outbound_convert.go
-index 69f74eaf..54efa5e5 100644
---- a/llm/transformer/openai/responses/outbound_convert.go
-+++ b/llm/transformer/openai/responses/outbound_convert.go
-@@ -253,6 +253,7 @@ func convertAssistantMessage(msg llm.Message) []Item {
- 		items = append(items, Item{
- 			ID:               reasoningItem.ID,
- 			Type:             "reasoning",
-+			Status:           lo.ToPtr("completed"),
- 			EncryptedContent: encryptedContent,
- 			Summary:          summary,
- 		})
-@@ -265,6 +266,7 @@ func convertAssistantMessage(msg llm.Message) []Item {
- 				Type:   "custom_tool_call",
- 				CallID: tc.ResponseCustomToolCall.CallID,
- 				Name:   tc.ResponseCustomToolCall.Name,
-+				Status: lo.ToPtr("completed"),
- 				Input:  lo.ToPtr(tc.ResponseCustomToolCall.Input),
- 			})
- 		} else {
-@@ -274,6 +276,7 @@ func convertAssistantMessage(msg llm.Message) []Item {
- 				Name:      localFunctionName(tc.Function.Namespace, tc.Function.Name),
- 				Namespace: tc.Function.Namespace,
- 				Arguments: tc.Function.Arguments,
-+				Status:    lo.ToPtr("completed"),
- 			})
- 		}
- 	}
-@@ -374,6 +377,7 @@ func convertToolMessageWithType(msg llm.Message, itemType string) Item {
- 	return Item{
- 		Type:   itemType,
- 		CallID: lo.FromPtr(msg.ToolCallID),
-+		Status: lo.ToPtr("completed"),
- 		Output: &output,
- 	}
- }
+ //
+ //nolint:containedctx // Required so Next() can observe request cancellation.

@@ -1,5 +1,5 @@
 diff --git a/internal/server/biz/channel_llm.go b/internal/server/biz/channel_llm.go
-index c3150fc..637b673 100644
+index 1a85eae..78a1c9b 100644
 --- a/internal/server/biz/channel_llm.go
 +++ b/internal/server/biz/channel_llm.go
 @@ -100,24 +100,29 @@ func (c *Channel) ChooseModel(model string) (string, error) {
@@ -40,10 +40,10 @@ index c3150fc..637b673 100644
  
  	return svc.httpClient.WithProxy(channelSettings.Proxy)
 diff --git a/internal/server/biz/model_fetcher.go b/internal/server/biz/model_fetcher.go
-index e9827a6..025beed 100644
+index f94a1c6..9b5a262 100644
 --- a/internal/server/biz/model_fetcher.go
 +++ b/internal/server/biz/model_fetcher.go
-@@ -378,6 +378,9 @@ func (f *ModelFetcher) FetchModels(ctx context.Context, input FetchModelsInput)
+@@ -379,6 +379,9 @@ func (f *ModelFetcher) FetchModels(ctx context.Context, input FetchModelsInput)
  			}
  			if ch.Settings != nil && ch.Settings.Proxy != nil {
  				httpClient = f.httpClient.WithProxy(ch.Settings.Proxy)
@@ -53,7 +53,7 @@ index e9827a6..025beed 100644
  			}
  		}
  
-@@ -513,6 +516,9 @@ func (f *ModelFetcher) FetchModels(ctx context.Context, input FetchModelsInput)
+@@ -531,6 +534,9 @@ func (f *ModelFetcher) FetchModels(ctx context.Context, input FetchModelsInput)
  	httpClient := f.httpClient
  	if proxyConfig != nil {
  		httpClient = f.httpClient.WithProxy(proxyConfig)
@@ -64,10 +64,10 @@ index e9827a6..025beed 100644
  	if isCommandCodeChannelType(channelType) {
  		httpClient = httpClient.WithRejectHTTPSDowngrade()
 diff --git a/llm/httpclient/client.go b/llm/httpclient/client.go
-index 2be5922..208538f 100644
+index 2be5922..334e76a 100644
 --- a/llm/httpclient/client.go
 +++ b/llm/httpclient/client.go
-@@ -98,13 +98,75 @@ func NewHttpClientWithProxy(proxyConfig *ProxyConfig, opts ...ClientOption) *Htt
+@@ -98,13 +98,84 @@ func NewHttpClientWithProxy(proxyConfig *ProxyConfig, opts ...ClientOption) *Htt
  }
  
  // WithProxy returns a new HttpClient that uses the given proxy configuration,
@@ -94,6 +94,9 @@ index 2be5922..208538f 100644
 +	result.proxyConfig = proxyConfig
 +
 +	proxyFunc := getProxyFunc(proxyConfig)
++	previousDisableConnectionReuse := hc.proxyConfig != nil &&
++		hc.proxyConfig.Type == ProxyTypeURL &&
++		hc.proxyConfig.DisableConnectionReuse
 +	disableConnectionReuse := proxyConfig != nil &&
 +		proxyConfig.Type == ProxyTypeURL &&
 +		proxyConfig.DisableConnectionReuse
@@ -108,11 +111,13 @@ index 2be5922..208538f 100644
 +		if disableConnectionReuse {
 +			cloned.DisableKeepAlives = true
 +			cloned.ForceAttemptHTTP2 = false
++		} else if previousDisableConnectionReuse {
++			cloned.DisableKeepAlives = false
++			cloned.ForceAttemptHTTP2 = true
 +		}
 +		client.Transport = cloned
 +		return &result
- 	}
--	return NewHttpClientWithProxy(proxyConfig, opts...)
++	}
 +
 +	if hc.client.Transport == nil {
 +		var base *http.Transport
@@ -139,20 +144,24 @@ index 2be5922..208538f 100644
 +		if disableConnectionReuse {
 +			cloned.DisableKeepAlives = true
 +			cloned.ForceAttemptHTTP2 = false
++		} else if previousDisableConnectionReuse {
++			cloned.DisableKeepAlives = false
++			cloned.ForceAttemptHTTP2 = true
 +		}
 +		client.Transport = cloned
 +		return &result
-+	}
+ 	}
+-	return NewHttpClientWithProxy(proxyConfig, opts...)
 +
 +	return &result
  }
  
  // WithRejectHTTPSDowngrade returns a client that preserves all current options
 diff --git a/llm/httpclient/client_test.go b/llm/httpclient/client_test.go
-index 9f88857..18524e0 100644
+index 9f88857..3f5206f 100644
 --- a/llm/httpclient/client_test.go
 +++ b/llm/httpclient/client_test.go
-@@ -518,6 +518,96 @@ func TestNewHttpClientWithProxy_DisableConnectionReuseOnlyAppliesToURLProxy(t *t
+@@ -518,6 +518,111 @@ func TestNewHttpClientWithProxy_DisableConnectionReuseOnlyAppliesToURLProxy(t *t
  	}
  }
  
@@ -243,6 +252,21 @@ index 9f88857..18524e0 100644
 +		require.NoError(t, err)
 +		require.Equal(t, http.StatusOK, resp.StatusCode)
 +		require.True(t, called.Load(), "custom round tripper should have been used")
++	})
++
++	t.Run("URL-only connection reuse restriction does not leak across switches", func(t *testing.T) {
++		hc := NewHttpClientWithProxy(&ProxyConfig{
++			Type:                   ProxyTypeURL,
++			URL:                    "http://proxy.example.com:8080",
++			DisableConnectionReuse: true,
++		})
++		direct := hc.WithProxy(&ProxyConfig{Type: ProxyTypeDisabled})
++		defer direct.CloseIdleConnections()
++
++		transport, ok := direct.GetNativeClient().Transport.(*http.Transport)
++		require.True(t, ok)
++		require.False(t, transport.DisableKeepAlives)
++		require.True(t, transport.ForceAttemptHTTP2)
 +	})
 +}
 +
