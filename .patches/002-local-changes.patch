@@ -1,5 +1,5 @@
 diff --git a/Dockerfile b/Dockerfile
-index bebea978..e6a3081b 100644
+index 97534892..dfa83902 100644
 --- a/Dockerfile
 +++ b/Dockerfile
 @@ -1,6 +1,8 @@
@@ -11,7 +11,7 @@ index bebea978..e6a3081b 100644
  RUN corepack enable && corepack prepare pnpm@10 --activate
  COPY frontend/package.json frontend/pnpm-lock.yaml ./
  RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
-@@ -18,20 +20,22 @@ FROM golang:alpine AS backend-builder
+@@ -18,26 +20,30 @@ FROM golang:alpine AS backend-builder
  
  WORKDIR /build
  
@@ -34,10 +34,19 @@ index bebea978..e6a3081b 100644
 -    GOOS=linux
 +    GOOS=linux \
 +    GOPROXY=https://goproxy.cn,direct
++
++ARG VERSION
  
  RUN --mount=type=cache,target=/go/pkg/mod \
      --mount=type=cache,target=/root/.cache/go-build \
-@@ -45,7 +49,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
+     GOTOOLCHAIN=auto go build \
+     -tags=nomsgpack \
+-    -ldflags "-s -w -X 'github.com/looplj/axonhub/internal/build.Version=$(cat internal/build/VERSION 2>/dev/null || echo dev)' -X 'github.com/looplj/axonhub/internal/build.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)'" \
++    -ldflags "-s -w -X 'github.com/looplj/axonhub/internal/build.Version=${VERSION:-$(cat internal/build/VERSION 2>/dev/null || echo dev)}' -X 'github.com/looplj/axonhub/internal/build.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)'" \
+     -o axonhub \
+     ./cmd/axonhub && \
+     ./scripts/verify-go-sse-dependency-test.sh && \
+@@ -45,7 +51,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
  
  FROM alpine
  
@@ -48,10 +57,10 @@ index bebea978..e6a3081b 100644
      && adduser -S -D -H -u 65532 -G axonhub axonhub
  
 diff --git a/docker-compose.yml b/docker-compose.yml
-index e79858a8..6b0e1c4c 100644
+index 50ca0339..e057d8d9 100644
 --- a/docker-compose.yml
 +++ b/docker-compose.yml
-@@ -15,15 +15,27 @@
+@@ -14,15 +14,27 @@
  # - 必须设置 DB_PASSWORD，不再提供弱默认密码
  # - 必须显式设置 AXONHUB_IMAGE 和 POSTGRES_IMAGE；生产环境使用不可变 digest
  # - 默认只绑定到宿主机回环地址；需要公网访问时请显式设置 AXONHUB_BIND_ADDRESS
@@ -79,13 +88,15 @@ index e79858a8..6b0e1c4c 100644
      volumes:
        - postgres_data:/var/lib/postgresql/data
      networks:
-@@ -50,11 +62,25 @@ services:
+@@ -49,11 +61,27 @@ services:
  
    # AxonHub 主服务
    axonhub:
 +    build:
 +      context: .
 +      dockerfile: Dockerfile
++      args:
++        VERSION: ${VERSION:-}
 +      network: host
      image: ${AXONHUB_IMAGE:?AXONHUB_IMAGE must be set (prefer an immutable digest)}
 +    container_name: axonhub-app
@@ -105,7 +116,7 @@ index e79858a8..6b0e1c4c 100644
      ports:
        - "${AXONHUB_BIND_ADDRESS:-127.0.0.1}:${AXONHUB_HOST_PORT:-8090}:8090"
      volumes:
-@@ -95,6 +121,7 @@ services:
+@@ -93,6 +121,7 @@ services:
          [
            "CMD",
            "wget",
