@@ -1,8 +1,8 @@
 diff --git a/internal/server/biz/channel_llm.go b/internal/server/biz/channel_llm.go
-index 1a85eae..78a1c9b 100644
+index 13a7cf3d..80f3f373 100644
 --- a/internal/server/biz/channel_llm.go
 +++ b/internal/server/biz/channel_llm.go
-@@ -100,24 +100,29 @@ func (c *Channel) ChooseModel(model string) (string, error) {
+@@ -102,24 +102,29 @@ func (c *Channel) ChooseModel(model string) (string, error) {
  	return entry.ActualModel, nil
  }
  
@@ -40,7 +40,7 @@ index 1a85eae..78a1c9b 100644
  
  	return svc.httpClient.WithProxy(channelSettings.Proxy)
 diff --git a/internal/server/biz/model_fetcher.go b/internal/server/biz/model_fetcher.go
-index f94a1c6..9b5a262 100644
+index ff350480..f992fa3e 100644
 --- a/internal/server/biz/model_fetcher.go
 +++ b/internal/server/biz/model_fetcher.go
 @@ -379,6 +379,9 @@ func (f *ModelFetcher) FetchModels(ctx context.Context, input FetchModelsInput)
@@ -53,26 +53,26 @@ index f94a1c6..9b5a262 100644
  			}
  		}
  
-@@ -531,6 +534,9 @@ func (f *ModelFetcher) FetchModels(ctx context.Context, input FetchModelsInput)
+@@ -520,6 +523,9 @@ func (f *ModelFetcher) FetchModels(ctx context.Context, input FetchModelsInput)
  	httpClient := f.httpClient
  	if proxyConfig != nil {
- 		httpClient = f.httpClient.WithProxy(proxyConfig)
+ 		httpClient = httpClient.WithProxy(proxyConfig)
 +	} else {
 +		// Direct connection by default; do not inherit environment proxy settings.
 +		httpClient = f.httpClient.WithProxy(&httpclient.ProxyConfig{Type: httpclient.ProxyTypeDisabled})
  	}
- 	if isCommandCodeChannelType(channelType) {
+ 	if isCommandCodeChannelType(channelType) || codexChannel != nil {
  		httpClient = httpClient.WithRejectHTTPSDowngrade()
 diff --git a/llm/httpclient/client.go b/llm/httpclient/client.go
-index 2be5922..334e76a 100644
+index 7ac3f80d..d44ffacd 100644
 --- a/llm/httpclient/client.go
 +++ b/llm/httpclient/client.go
-@@ -98,13 +98,84 @@ func NewHttpClientWithProxy(proxyConfig *ProxyConfig, opts ...ClientOption) *Htt
+@@ -98,13 +98,83 @@ func NewHttpClientWithProxy(proxyConfig *ProxyConfig, opts ...ClientOption) *Htt
  }
  
  // WithProxy returns a new HttpClient that uses the given proxy configuration,
 -// while preserving all other options (e.g., InsecureSkipVerify) from the original client.
-+// while preserving transport settings, custom RoundTrippers, and redirect policy.
++// while preserving client settings, compatible transports, and redirect policy.
  func (hc *HttpClient) WithProxy(proxyConfig *ProxyConfig) *HttpClient {
 -	opts := append([]ClientOption(nil), hc.opts...)
 -	if hc.rejectHTTPSDowngrade {
@@ -101,10 +101,9 @@ index 2be5922..334e76a 100644
 +		proxyConfig.Type == ProxyTypeURL &&
 +		proxyConfig.DisableConnectionReuse
 +
-+	// Preserve the original transport so custom RoundTrippers (e.g., test
-+	// mocks) and transport tuning survive the proxy switch. When the transport
-+	// is nil (default client) or a plain *http.Transport, clone it and apply
-+	// the proxy so the configured proxy actually takes effect.
++	// Clone plain transports to preserve tuning. A custom RoundTripper is only
++	// preserved when no proxy is explicitly requested; otherwise it cannot apply
++	// the requested proxy and must be replaced.
 +	if transport, ok := hc.client.Transport.(*http.Transport); ok {
 +		cloned := transport.Clone()
 +		cloned.Proxy = proxyFunc
@@ -119,7 +118,7 @@ index 2be5922..334e76a 100644
 +		return &result
 +	}
 +
-+	if hc.client.Transport == nil {
++	if hc.client.Transport == nil || (proxyConfig != nil && proxyConfig.Type != ProxyTypeDisabled) {
 +		var base *http.Transport
 +		if defaultTransport, ok := http.DefaultTransport.(*http.Transport); ok {
 +			base = defaultTransport
@@ -157,119 +156,3 @@ index 2be5922..334e76a 100644
  }
  
  // WithRejectHTTPSDowngrade returns a client that preserves all current options
-diff --git a/llm/httpclient/client_test.go b/llm/httpclient/client_test.go
-index 9f88857..3f5206f 100644
---- a/llm/httpclient/client_test.go
-+++ b/llm/httpclient/client_test.go
-@@ -518,6 +518,111 @@ func TestNewHttpClientWithProxy_DisableConnectionReuseOnlyAppliesToURLProxy(t *t
- 	}
- }
- 
-+type roundTripperFunc func(*http.Request) (*http.Response, error)
-+
-+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-+	return f(req)
-+}
-+
-+func TestWithProxy_PreservesTransport(t *testing.T) {
-+	t.Run("client settings and downgrade protection survive proxy switches", func(t *testing.T) {
-+		for _, transport := range []http.RoundTripper{
-+			nil,
-+			http.DefaultTransport.(*http.Transport).Clone(),
-+			roundTripperFunc(func(*http.Request) (*http.Response, error) { return nil, nil }),
-+		} {
-+			var redirectCalled bool
-+			native := &http.Client{
-+				Transport: transport,
-+				Timeout:   17 * time.Second,
-+				CheckRedirect: func(*http.Request, []*http.Request) error {
-+					redirectCalled = true
-+					return http.ErrUseLastResponse
-+				},
-+			}
-+			hc := NewHttpClientWithClient(native).WithRejectHTTPSDowngrade()
-+			for _, config := range []*ProxyConfig{
-+				{Type: ProxyTypeDisabled},
-+				{Type: ProxyTypeURL, URL: "http://proxy.example.com:8080"},
-+				{Type: ProxyTypeEnvironment},
-+			} {
-+				hc = hc.WithProxy(config)
-+				require.True(t, hc.rejectHTTPSDowngrade)
-+				require.Equal(t, native.Timeout, hc.GetNativeClient().Timeout)
-+				previous := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
-+				next := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
-+				require.ErrorContains(t, hc.GetNativeClient().CheckRedirect(next, []*http.Request{previous}), "refusing HTTPS to HTTP redirect")
-+				require.False(t, redirectCalled)
-+				next = httptest.NewRequest(http.MethodGet, "https://example.com/next", nil)
-+				require.ErrorIs(t, hc.GetNativeClient().CheckRedirect(next, []*http.Request{previous}), http.ErrUseLastResponse)
-+				require.True(t, redirectCalled)
-+				redirectCalled = false
-+				hc.CloseIdleConnections()
-+			}
-+		}
-+	})
-+
-+	t.Run("URL proxy applies to default transport", func(t *testing.T) {
-+		hc := NewHttpClient()
-+		proxied := hc.WithProxy(&ProxyConfig{Type: ProxyTypeURL, URL: "http://proxy.example.com:8080"})
-+		defer proxied.CloseIdleConnections()
-+
-+		transport, ok := proxied.GetNativeClient().Transport.(*http.Transport)
-+		require.True(t, ok)
-+		proxyURL, err := transport.Proxy(&http.Request{URL: &url.URL{Scheme: "https", Host: "api.example.com"}})
-+		require.NoError(t, err)
-+		require.NotNil(t, proxyURL)
-+		require.Equal(t, "http://proxy.example.com:8080", proxyURL.String())
-+	})
-+
-+	t.Run("disabled proxy bypasses", func(t *testing.T) {
-+		hc := NewHttpClient()
-+		proxied := hc.WithProxy(&ProxyConfig{Type: ProxyTypeDisabled})
-+		defer proxied.CloseIdleConnections()
-+
-+		transport, ok := proxied.GetNativeClient().Transport.(*http.Transport)
-+		require.True(t, ok)
-+		proxyURL, err := transport.Proxy(&http.Request{URL: &url.URL{Scheme: "https", Host: "api.example.com"}})
-+		require.NoError(t, err)
-+		require.Nil(t, proxyURL)
-+	})
-+
-+	t.Run("custom RoundTripper preserved", func(t *testing.T) {
-+		var called atomic.Bool
-+		rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-+			called.Store(true)
-+			return &http.Response{
-+				StatusCode: http.StatusOK,
-+				Header:     make(http.Header),
-+				Body:       io.NopCloser(strings.NewReader(`{}`)),
-+				Request:    req,
-+			}, nil
-+		})
-+		hc := NewHttpClientWithClient(&http.Client{Transport: rt})
-+		proxied := hc.WithProxy(&ProxyConfig{Type: ProxyTypeURL, URL: "http://proxy.example.com:8080"})
-+
-+		resp, err := proxied.Do(context.Background(), &Request{Method: http.MethodGet, URL: "https://api.example.com/v1/responses"})
-+		require.NoError(t, err)
-+		require.Equal(t, http.StatusOK, resp.StatusCode)
-+		require.True(t, called.Load(), "custom round tripper should have been used")
-+	})
-+
-+	t.Run("URL-only connection reuse restriction does not leak across switches", func(t *testing.T) {
-+		hc := NewHttpClientWithProxy(&ProxyConfig{
-+			Type:                   ProxyTypeURL,
-+			URL:                    "http://proxy.example.com:8080",
-+			DisableConnectionReuse: true,
-+		})
-+		direct := hc.WithProxy(&ProxyConfig{Type: ProxyTypeDisabled})
-+		defer direct.CloseIdleConnections()
-+
-+		transport, ok := direct.GetNativeClient().Transport.(*http.Transport)
-+		require.True(t, ok)
-+		require.False(t, transport.DisableKeepAlives)
-+		require.True(t, transport.ForceAttemptHTTP2)
-+	})
-+}
-+
- func TestHttpClientImpl_buildHttpRequest(t *testing.T) {
- 	client := &HttpClient{
- 		client: &http.Client{Timeout: 5 * time.Second},
