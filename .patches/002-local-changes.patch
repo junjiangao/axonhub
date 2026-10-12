@@ -57,10 +57,10 @@ index 97534892..dfa83902 100644
      && adduser -S -D -H -u 65532 -G axonhub axonhub
  
 diff --git a/docker-compose.yml b/docker-compose.yml
-index 50ca0339..e057d8d9 100644
+index 50ca0339..2859f48e 100644
 --- a/docker-compose.yml
 +++ b/docker-compose.yml
-@@ -14,15 +14,27 @@
+@@ -14,15 +14,29 @@
  # - 必须设置 DB_PASSWORD，不再提供弱默认密码
  # - 必须显式设置 AXONHUB_IMAGE 和 POSTGRES_IMAGE；生产环境使用不可变 digest
  # - 默认只绑定到宿主机回环地址；需要公网访问时请显式设置 AXONHUB_BIND_ADDRESS
@@ -68,6 +68,8 @@ index 50ca0339..e057d8d9 100644
 +# 本地说明：
 +# - axonhub 镜像由本地 Dockerfile 构建（不使用远程镜像），镜像名/标签由 AXONHUB_IMAGE 指定
 +# - 镜像名、端口、时区等均可在项目根目录 .env 文件中覆盖（.env 已被 .gitignore 忽略）
++# - 构建并启动：./scripts/build-image.sh（显式授权 network.host）
++# - 仅检查构建配置：./scripts/build-image.sh --print
  
  services:
    # PostgreSQL 数据库
@@ -88,7 +90,7 @@ index 50ca0339..e057d8d9 100644
      volumes:
        - postgres_data:/var/lib/postgresql/data
      networks:
-@@ -49,11 +61,27 @@ services:
+@@ -49,11 +63,27 @@ services:
  
    # AxonHub 主服务
    axonhub:
@@ -116,7 +118,7 @@ index 50ca0339..e057d8d9 100644
      ports:
        - "${AXONHUB_BIND_ADDRESS:-127.0.0.1}:${AXONHUB_HOST_PORT:-8090}:8090"
      volumes:
-@@ -93,6 +121,7 @@ services:
+@@ -93,6 +123,7 @@ services:
          [
            "CMD",
            "wget",
@@ -124,3 +126,44 @@ index 50ca0339..e057d8d9 100644
            "--no-verbose",
            "--tries=1",
            "--spider",
+diff --git a/scripts/build-image.sh b/scripts/build-image.sh
+new file mode 100755
+index 00000000..92c00553
+--- /dev/null
++++ b/scripts/build-image.sh
+@@ -0,0 +1,35 @@
++#!/usr/bin/env bash
++#
++# build-image.sh — 构建本地 AxonHub 镜像并启动容器
++#
++# 用法（源码工作分支）:
++#   ./scripts/build-image.sh          # 构建镜像并启动 AxonHub
++#   ./scripts/build-image.sh --print  # 仅检查最终构建配置
++#
++set -euo pipefail
++
++if [ "$#" -gt 1 ] || { [ "$#" -eq 1 ] && [ "$1" != "--print" ]; }; then
++  echo "用法: $0 [--print]" >&2
++  exit 2
++fi
++
++REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++cd "$REPO_ROOT"
++
++if [ ! -f docker-compose.yml ]; then
++  echo "[!] 缺少 docker-compose.yml，请在源码工作分支执行。" >&2
++  exit 1
++fi
++
++BAKE_OPTIONS=(--file - --allow=network.host --load)
++if [ "${1:-}" = "--print" ]; then
++  BAKE_OPTIONS+=(--print)
++fi
++
++# Compose 负责读取 .env 和覆盖配置；导出失败时不会继续构建。
++BAKE_CONFIG=$(docker compose build --print axonhub)
++docker buildx bake "${BAKE_OPTIONS[@]}" axonhub <<< "$BAKE_CONFIG"
++
++if [ "${1:-}" != "--print" ]; then
++  docker compose up -d --no-build axonhub
++fi
