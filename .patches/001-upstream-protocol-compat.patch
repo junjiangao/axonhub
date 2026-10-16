@@ -1,5 +1,5 @@
 diff --git a/internal/server/orchestrator/pass_through.go b/internal/server/orchestrator/pass_through.go
-index 38f78ba3..9d1b42a8 100644
+index ba300a29..7eef2301 100644
 --- a/internal/server/orchestrator/pass_through.go
 +++ b/internal/server/orchestrator/pass_through.go
 @@ -1,6 +1,7 @@
@@ -8,33 +8,25 @@ index 38f78ba3..9d1b42a8 100644
  import (
 +	"bytes"
  	"context"
+ 	"errors"
  	"fmt"
- 	"mime"
-@@ -8,6 +9,7 @@ import (
- 	"strings"
- 	"sync"
+@@ -686,6 +687,14 @@ func applyPassThroughStream(outbound *PersistentOutboundTransformer, systemServi
+ 			rawStream = streams.PrependStream(rawStream, held...)
+ 		}
  
-+	"github.com/tidwall/gjson"
- 	"github.com/tidwall/sjson"
- 
- 	"github.com/looplj/axonhub/internal/log"
-@@ -519,7 +521,13 @@ func applyPassThroughStream(outbound *PersistentOutboundTransformer, systemServi
- 
- 		rawStream := &passThroughChannelStream{ctx: ctx, ch: rawCh, errRef: errRef, errMu: errMu, cancel: cancel}
- 
--		return streams.PrependStream(rawStream, held...), nil
 +		// Chain the raw-byte normalizations applied to pass-through chunks:
 +		// finish_reason:"" -> null and tool_calls delta function name:"" -> null.
 +		// These normalizations apply to Chat Completions pass-through chunks.
-+		return streams.Map(
-+			streams.Map(streams.PrependStream(rawStream, held...), normalizePassThroughFinishReason),
++		rawStream = streams.Map(
++			streams.Map(rawStream, normalizePassThroughFinishReason),
 +			normalizePassThroughToolCallName,
-+		), nil
- 	})
- }
- 
-@@ -579,6 +587,123 @@ func (b *rawStreamBacklog) attach() []*httpclient.StreamEvent {
- 	return events
++		)
++
+ 		if adaptResponses {
+ 			rawStream = &responsesTransportStream{
+ 				stream: rawStream,
+@@ -984,6 +993,123 @@ func (b *rawStreamBacklog) release(size int) {
+ 	b.mu.Unlock()
  }
  
 +// normalizePassThroughFinishReason rewrites an empty finish_reason string to null

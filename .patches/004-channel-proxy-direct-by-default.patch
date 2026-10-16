@@ -1,8 +1,8 @@
 diff --git a/internal/server/biz/channel_llm.go b/internal/server/biz/channel_llm.go
-index 13a7cf3d..80f3f373 100644
+index f7f4c595..768c2f0b 100644
 --- a/internal/server/biz/channel_llm.go
 +++ b/internal/server/biz/channel_llm.go
-@@ -102,24 +102,29 @@ func (c *Channel) ChooseModel(model string) (string, error) {
+@@ -105,24 +105,29 @@ func (c *Channel) ChooseModel(model string) (string, error) {
  	return entry.ActualModel, nil
  }
  
@@ -40,10 +40,10 @@ index 13a7cf3d..80f3f373 100644
  
  	return svc.httpClient.WithProxy(channelSettings.Proxy)
 diff --git a/internal/server/biz/model_fetcher.go b/internal/server/biz/model_fetcher.go
-index ff350480..f992fa3e 100644
+index 8477f534..32fdf8d7 100644
 --- a/internal/server/biz/model_fetcher.go
 +++ b/internal/server/biz/model_fetcher.go
-@@ -379,6 +379,9 @@ func (f *ModelFetcher) FetchModels(ctx context.Context, input FetchModelsInput)
+@@ -386,6 +386,9 @@ func (f *ModelFetcher) FetchModels(ctx context.Context, input FetchModelsInput)
  			}
  			if ch.Settings != nil && ch.Settings.Proxy != nil {
  				httpClient = f.httpClient.WithProxy(ch.Settings.Proxy)
@@ -53,7 +53,7 @@ index ff350480..f992fa3e 100644
  			}
  		}
  
-@@ -520,6 +523,9 @@ func (f *ModelFetcher) FetchModels(ctx context.Context, input FetchModelsInput)
+@@ -542,6 +545,9 @@ func (f *ModelFetcher) FetchModels(ctx context.Context, input FetchModelsInput)
  	httpClient := f.httpClient
  	if proxyConfig != nil {
  		httpClient = httpClient.WithProxy(proxyConfig)
@@ -61,10 +61,10 @@ index ff350480..f992fa3e 100644
 +		// Direct connection by default; do not inherit environment proxy settings.
 +		httpClient = f.httpClient.WithProxy(&httpclient.ProxyConfig{Type: httpclient.ProxyTypeDisabled})
  	}
- 	if isCommandCodeChannelType(channelType) || codexChannel != nil {
+ 	if isCommandCodeChannelType(channelType) || codexChannel != nil || thirdPartyCodexCatalog {
  		httpClient = httpClient.WithRejectHTTPSDowngrade()
 diff --git a/llm/httpclient/client.go b/llm/httpclient/client.go
-index 7ac3f80d..d44ffacd 100644
+index c402fd86..5c739058 100644
 --- a/llm/httpclient/client.go
 +++ b/llm/httpclient/client.go
 @@ -98,13 +98,83 @@ func NewHttpClientWithProxy(proxyConfig *ProxyConfig, opts ...ClientOption) *Htt
