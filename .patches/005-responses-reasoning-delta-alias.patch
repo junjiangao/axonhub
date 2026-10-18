@@ -1,0 +1,61 @@
+diff --git a/llm/transformer/openai/responses/aggregator.go b/llm/transformer/openai/responses/aggregator.go
+index a8cdaafa..4708882e 100644
+--- a/llm/transformer/openai/responses/aggregator.go
++++ b/llm/transformer/openai/responses/aggregator.go
+@@ -476,7 +476,7 @@ func (a *streamAggregator) processEvent(ev *StreamEvent) {
+ 		applyDoneText(part.Text, ev.Text)
+ 		part.Final = true
+ 
+-	case StreamEventTypeReasoningTextDelta:
++	case StreamEventTypeReasoningTextDelta, StreamEventTypeReasoningDelta:
+ 		contentIndex := lo.FromPtr(ev.ContentIndex)
+ 		if !validAggregatedContentIndex(contentIndex) {
+ 			return
+@@ -501,7 +501,7 @@ func (a *streamAggregator) processEvent(ev *StreamEvent) {
+ 		part.Type = "reasoning_text"
+ 		part.Text.WriteString(ev.Delta)
+ 
+-	case StreamEventTypeReasoningTextDone:
++	case StreamEventTypeReasoningTextDone, StreamEventTypeReasoningDone:
+ 		contentIndex := lo.FromPtr(ev.ContentIndex)
+ 		if !validAggregatedContentIndex(contentIndex) {
+ 			return
+diff --git a/llm/transformer/openai/responses/outbound_stream.go b/llm/transformer/openai/responses/outbound_stream.go
+index 15c292d7..02cb4b30 100644
+--- a/llm/transformer/openai/responses/outbound_stream.go
++++ b/llm/transformer/openai/responses/outbound_stream.go
+@@ -547,7 +547,7 @@ func (s *responsesOutboundStream) transformStreamChunk(event *httpclient.StreamE
+ 			},
+ 		}
+ 
+-	case StreamEventTypeReasoningSummaryTextDelta, StreamEventTypeReasoningTextDelta:
++	case StreamEventTypeReasoningSummaryTextDelta, StreamEventTypeReasoningTextDelta, StreamEventTypeReasoningDelta:
+ 		// Reasoning content delta
+ 		s.state.reasoningContent.WriteString(streamEvent.Delta)
+ 		itemID := lo.FromPtr(streamEvent.ItemID)
+@@ -574,7 +574,7 @@ func (s *responsesOutboundStream) transformStreamChunk(event *httpclient.StreamE
+ 		// Text content completed - skip, content was already streamed via deltas
+ 		return nil // Intentionally skip this event
+ 
+-	case StreamEventTypeReasoningSummaryTextDone, StreamEventTypeReasoningTextDone:
++	case StreamEventTypeReasoningSummaryTextDone, StreamEventTypeReasoningTextDone, StreamEventTypeReasoningDone:
+ 		// Reasoning content completed - skip, content was already streamed via deltas
+ 		return nil // Intentionally skip this event
+ 
+diff --git a/llm/transformer/openai/responses/stream_event.go b/llm/transformer/openai/responses/stream_event.go
+index 2b5519d3..19ee9fc7 100644
+--- a/llm/transformer/openai/responses/stream_event.go
++++ b/llm/transformer/openai/responses/stream_event.go
+@@ -59,6 +59,12 @@ const (
+ 	StreamEventTypeReasoningTextDelta        StreamEventType = "response.reasoning_text.delta"
+ 	StreamEventTypeReasoningTextDone         StreamEventType = "response.reasoning_text.done"
+ 
++	// Legacy reasoning event names that OpenAI emitted before 2025-07 and that
++	// compatible endpoints still send (Bedrock, Vercel AI Gateway, Command Code).
++	// The payload matches response.reasoning_text.* and is mapped the same way.
++	StreamEventTypeReasoningDelta StreamEventType = "response.reasoning.delta"
++	StreamEventTypeReasoningDone  StreamEventType = "response.reasoning.done"
++
+ 	// Image generation events.
+ 
+ 	StreamEventTypeImageGenerationGenerating   StreamEventType = "response.image_generation_call.generating"
