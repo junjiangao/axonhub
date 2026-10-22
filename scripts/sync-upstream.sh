@@ -156,7 +156,15 @@ fi
 
 # Step 1: 同步 unstable
 print_info ">>> [1/4] 同步 $UPSTREAM_BRANCH 到最新上游..."
-run git checkout "$UPSTREAM_BRANCH"
+# 本地无该分支时显式指定远端：origin 与 upstream 上的同名分支会让 git checkout 的短名解析报
+# "matched multiple remote tracking branches"。优先跟踪 origin，保持与 origin 发布流程一致。
+if git rev-parse --verify --quiet "refs/heads/$UPSTREAM_BRANCH" >/dev/null; then
+  run git checkout "$UPSTREAM_BRANCH"
+elif git rev-parse --verify --quiet "refs/remotes/origin/$UPSTREAM_BRANCH" >/dev/null; then
+  run git checkout -b "$UPSTREAM_BRANCH" --track "origin/$UPSTREAM_BRANCH"
+else
+  run git checkout -b "$UPSTREAM_BRANCH" --track "$UPSTREAM_REMOTE/$UPSTREAM_BRANCH"
+fi
 run git pull "$UPSTREAM_REMOTE" "$UPSTREAM_BRANCH"
 run git push origin "$UPSTREAM_BRANCH"
 echo
