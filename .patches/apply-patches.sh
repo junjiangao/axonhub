@@ -47,20 +47,16 @@ for PATCH in "${PATCHES[@]}"; do
 
   echo "  [*] 应用: $PATCH"
 
-  if git apply --check "$PATCH_FILE" 2>/dev/null; then
+  if git apply --check "$PATCH_FILE"; then
     git apply "$PATCH_FILE"
     echo "  [✓] 成功"
   else
-    echo "  [!] 冲突，尝试 --reject 强制应用..."
-    if git apply --reject "$PATCH_FILE" 2>/dev/null; then
-      echo "  [~] 部分应用，请检查 .rej 文件并手动修复"
-    else
-      echo "  [✗] 应用失败，请手动处理: $PATCH"
-      echo "      文件位于: $PATCH_FILE"
-    fi
+    echo "  [✗] 补丁检查失败，已停止应用: $PATCH" >&2
+    echo "      文件位于: $PATCH_FILE" >&2
+    echo "      请修复补丁后，在干净工作区重新执行。" >&2
+    exit 1
   fi
   echo
 done
 
-echo ">>> 补丁应用完成"
-echo "    如果有 .rej 文件残留，请手动解决冲突"
+echo ">>> 所有补丁应用成功"

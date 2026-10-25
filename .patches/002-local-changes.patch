@@ -1,9 +1,9 @@
 diff --git a/Dockerfile b/Dockerfile
-index 97534892..dfa83902 100644
+index 6543e94e..a5c63977 100644
 --- a/Dockerfile
 +++ b/Dockerfile
 @@ -1,6 +1,8 @@
- FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend-builder
+ FROM --platform=$BUILDPLATFORM node:24-alpine AS frontend-builder
  
  WORKDIR /build
 +ENV COREPACK_NPM_REGISTRY=https://registry.npmmirror.com \
@@ -11,7 +11,7 @@ index 97534892..dfa83902 100644
  RUN corepack enable && corepack prepare pnpm@10 --activate
  COPY frontend/package.json frontend/pnpm-lock.yaml ./
  RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
-@@ -18,26 +20,30 @@ FROM golang:alpine AS backend-builder
+@@ -18,26 +20,30 @@ FROM golang:1.27.3-alpine3.24 AS backend-builder
  
  WORKDIR /build
  
