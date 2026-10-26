@@ -1,0 +1,91 @@
+diff --git a/llm/transformer/openai/codex/models.go b/llm/transformer/openai/codex/models.go
+index dca16b53..e426fe10 100644
+--- a/llm/transformer/openai/codex/models.go
++++ b/llm/transformer/openai/codex/models.go
+@@ -6,6 +6,7 @@ import (
+ 	"fmt"
+ 	"net/http"
+ 	"net/url"
++	"slices"
+ 	"sort"
+ 	"strings"
+ 
+@@ -65,6 +66,11 @@ func parseModelCatalog(body []byte, supplementImageModel, requireListVisibility
+ 			Visibility string `json:"visibility"`
+ 			Priority   int    `json:"priority"`
+ 		} `json:"models"`
++		// OpenAI-compatible relays answer the model listing endpoint with the
++		// standard {"data":[{"id":"..."}]} envelope instead of the catalog shape.
++		Data []struct {
++			ID string `json:"id"`
++		} `json:"data"`
+ 	}
+ 	if err := json.Unmarshal(body, &response); err != nil {
+ 		return nil, err
+@@ -85,6 +91,25 @@ func parseModelCatalog(body []byte, supplementImageModel, requireListVisibility
+ 			models = append(models, model.Slug)
+ 		}
+ 	}
++
++	// Only fall back when the catalog shape yielded nothing, so a response that
++	// carries both shapes keeps the catalog semantics (visibility, priority).
++	if len(models) == 0 {
++		seen := make(map[string]struct{}, len(response.Data))
++		for _, model := range response.Data {
++			id := strings.TrimSpace(model.ID)
++			if id == "" {
++				continue
++			}
++			if _, ok := seen[id]; ok {
++				continue
++			}
++			seen[id] = struct{}{}
++			models = append(models, id)
++		}
++		imageModelIncluded = slices.Contains(models, "gpt-image-2")
++	}
++
+ 	if len(models) == 0 {
+ 		return nil, fmt.Errorf("Codex catalog has no visible models")
+ 	}
+diff --git a/llm/transformer/openai/codex/models_test.go b/llm/transformer/openai/codex/models_test.go
+index cb1a186d..d508d2d0 100644
+--- a/llm/transformer/openai/codex/models_test.go
++++ b/llm/transformer/openai/codex/models_test.go
+@@ -50,6 +50,36 @@ func TestCodexModelsIncludeImageModel(t *testing.T) {
+ 	}
+ }
+ 
++func TestModelCatalogAcceptsOpenAICompatibleEnvelope(t *testing.T) {
++	t.Run("third party", func(t *testing.T) {
++		// Given a relay answering with the standard OpenAI-compatible envelope.
++		body := []byte(`{"object":"list","data":[{"id":"gpt-5.6-sol","object":"model"},{"id":" gpt-5.6-terra "},{"id":"gpt-5.6-sol"},{"id":""}]}`)
++		// When the third-party catalog is parsed.
++		models, err := ParseThirdPartyModelCatalog(body)
++		// Then ids are trimmed, deduplicated and keep upstream order.
++		require.NoError(t, err)
++		require.Equal(t, []string{"gpt-5.6-sol", "gpt-5.6-terra"}, models)
++	})
++
++	t.Run("official supplements image model once", func(t *testing.T) {
++		// Given a fallback envelope that already lists the image model.
++		body := []byte(`{"data":[{"id":"gpt-image-2"},{"id":"gpt-5.6-sol"}]}`)
++		// When the official catalog is parsed.
++		models, err := ParseModelCatalog(body)
++		// Then the image model is not appended a second time.
++		require.NoError(t, err)
++		require.Equal(t, []string{"gpt-image-2", "gpt-5.6-sol"}, models)
++	})
++
++	t.Run("empty envelope", func(t *testing.T) {
++		// Given an envelope without usable ids, when it is parsed.
++		models, err := ParseThirdPartyModelCatalog([]byte(`{"data":[]}`))
++		// Then the original validation error is kept.
++		require.EqualError(t, err, "Codex catalog has no visible models")
++		require.Nil(t, models)
++	})
++}
++
+ func TestThirdPartyModelCatalogKeepsListedSlugsRegardlessOfVisibility(t *testing.T) {
+ 	models, err := ParseThirdPartyModelCatalog([]byte(`{"models":[{"slug":"visible","visibility":"list","priority":1},{"slug":"hidden","visibility":"hide","priority":2}]}`))
+ 

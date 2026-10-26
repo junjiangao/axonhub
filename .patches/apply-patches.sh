@@ -14,6 +14,7 @@ PATCHES=(
   "003-request-log-cache-hit-rate.patch"
   "004-channel-proxy-direct-by-default.patch"
   "005-responses-reasoning-delta-alias.patch"
+  "006-codex-openai-model-envelope.patch"
 )
 
 echo ">>> 应用本地补丁到 $(git branch --show-current)..."
