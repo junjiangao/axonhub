@@ -58,10 +58,10 @@ index 83fb816..12e4cff 100644
  
 diff --git a/docker-compose.override.yml b/docker-compose.override.yml
 new file mode 100644
-index 0000000..d25e4ae
+index 0000000..acf4e75
 --- /dev/null
 +++ b/docker-compose.override.yml
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,56 @@
 +# AxonHub 本地覆盖层 —— 由 docker compose 自动叠加在 docker-compose.yml 之上。
 +#
 +# 本文件由 .patches/002-local-changes.patch 创建（补丁集的一部分）：
@@ -78,6 +78,7 @@ index 0000000..d25e4ae
 +# 出站代理：仅影响依赖环境变量代理的调用（版本检查、模型目录拉取、GitHub 相关）。
 +# 渠道未显式配置代理时保持直连，不受这些变量影响。
 +# 使用 AXONHUB_ 前缀变量名，避免被宿主机 shell 已导出的 HTTP_PROXY 等覆盖。
++# 若 Docker 无法解析 host-gateway，可通过 AXONHUB_HOST_GATEWAY 指定宿主机地址。
 +
 +services:
 +  postgres:
@@ -104,8 +105,8 @@ index 0000000..d25e4ae
 +      HTTP_PROXY: ${AXONHUB_HTTP_PROXY:-}
 +      HTTPS_PROXY: ${AXONHUB_HTTPS_PROXY:-}
 +      NO_PROXY: ${AXONHUB_NO_PROXY:-localhost,127.0.0.1,::1,postgres,172.18.0.0/16,172.19.0.0/16}
-+    extra_hosts:
-+      - "host.docker.internal:host-gateway"
++    extra_hosts: !override
++      - "host.docker.internal:${AXONHUB_HOST_GATEWAY:-host-gateway}"
 +    healthcheck:
 +      test:
 +        [
