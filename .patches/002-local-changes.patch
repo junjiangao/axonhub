@@ -1,8 +1,8 @@
 diff --git a/Dockerfile b/Dockerfile
-index 83fb8165..12e4cff0 100644
+index 83fb816..12e4cff 100644
 --- a/Dockerfile
 +++ b/Dockerfile
-@@ -1,7 +1,9 @@
+@@ -1,6 +1,8 @@
  FROM --platform=$BUILDPLATFORM node:26-alpine AS frontend-builder
  
  WORKDIR /build
@@ -11,7 +11,6 @@ index 83fb8165..12e4cff0 100644
  RUN npm install --global corepack@0.36.0 \
      && corepack enable
  COPY frontend/package.json frontend/pnpm-lock.yaml ./
- RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
 @@ -19,26 +21,30 @@ FROM golang:1.27.3-alpine3.24 AS backend-builder
  
  WORKDIR /build
@@ -57,25 +56,31 @@ index 83fb8165..12e4cff0 100644
  RUN addgroup -S -g 65532 axonhub \
      && adduser -S -D -H -u 65532 -G axonhub axonhub
  
-diff --git a/docker-compose.yml b/docker-compose.yml
-index 50ca0339..2859f48e 100644
---- a/docker-compose.yml
-+++ b/docker-compose.yml
-@@ -14,15 +14,29 @@
- # - 必须设置 DB_PASSWORD，不再提供弱默认密码
- # - 必须显式设置 AXONHUB_IMAGE 和 POSTGRES_IMAGE；生产环境使用不可变 digest
- # - 默认只绑定到宿主机回环地址；需要公网访问时请显式设置 AXONHUB_BIND_ADDRESS
+diff --git a/docker-compose.override.yml b/docker-compose.override.yml
+new file mode 100644
+index 0000000..d25e4ae
+--- /dev/null
++++ b/docker-compose.override.yml
+@@ -0,0 +1,55 @@
++# AxonHub 本地覆盖层 —— 由 docker compose 自动叠加在 docker-compose.yml 之上。
 +#
-+# 本地说明：
-+# - axonhub 镜像由本地 Dockerfile 构建（不使用远程镜像），镜像名/标签由 AXONHUB_IMAGE 指定
-+# - 镜像名、端口、时区等均可在项目根目录 .env 文件中覆盖（.env 已被 .gitignore 忽略）
-+# - 构建并启动：./scripts/build-image.sh（显式授权 network.host）
-+# - 仅检查构建配置：./scripts/build-image.sh --print
- 
- services:
-   # PostgreSQL 数据库
-   postgres:
-     image: ${POSTGRES_IMAGE:?POSTGRES_IMAGE must be set (prefer an immutable digest)}
++# 本文件由 .patches/002-local-changes.patch 创建（补丁集的一部分）：
++# 需要修改时请改补丁后重新执行 .patches/apply-patches.sh，不要就地编辑。
++#
++# 放在 override 而不是 docker-compose.yml 里，是为了让上游的 docker-compose.yml
++# 保持与 unstable 完全一致，本地构建/部署定制不再随上游改动而 rebase。
++#
++# 合并语义提示（实测 Compose v5.6.1）：
++# - environment 是映射合并，只需写差异键；
++# - command 与 healthcheck.test 是整体替换，healthcheck.test 必须写全，
++#   因此上游若调整健康检查参数，这里需要跟着同步。
++#
++# 出站代理：仅影响依赖环境变量代理的调用（版本检查、模型目录拉取、GitHub 相关）。
++# 渠道未显式配置代理时保持直连，不受这些变量影响。
++# 使用 AXONHUB_ 前缀变量名，避免被宿主机 shell 已导出的 HTTP_PROXY 等覆盖。
++
++services:
++  postgres:
 +    container_name: axonhub-postgres
 +    command:
 +      - postgres
@@ -83,53 +88,38 @@ index 50ca0339..2859f48e 100644
 +      - timezone=${TZ:-Asia/Shanghai}
 +      - -c
 +      - log_timezone=${TZ:-Asia/Shanghai}
-     environment:
-       POSTGRES_DB: axonhub
-       POSTGRES_USER: axonhub
-       POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
++    environment:
 +      TZ: ${TZ:-Asia/Shanghai}
-     volumes:
-       - postgres_data:/var/lib/postgresql/data
-     networks:
-@@ -49,11 +63,27 @@ services:
- 
-   # AxonHub 主服务
-   axonhub:
++
++  axonhub:
 +    build:
 +      context: .
 +      dockerfile: Dockerfile
 +      args:
 +        VERSION: ${VERSION:-}
 +      network: host
-     image: ${AXONHUB_IMAGE:?AXONHUB_IMAGE must be set (prefer an immutable digest)}
 +    container_name: axonhub-app
-     environment:
-       # 数据库配置可以通过环境变量设置，优先级高于配置文件
-       AXONHUB_DB_DIALECT: postgres
-       AXONHUB_DB_DSN: "postgres://axonhub:${DB_PASSWORD:?DB_PASSWORD must be set}@postgres:5432/axonhub?sslmode=disable"
++    environment:
 +      TZ: ${TZ:-Asia/Shanghai}
-+      # 出站代理：仅影响依赖环境变量代理的调用（版本检查、模型目录拉取、GitHub 相关）。
-+      # 渠道未显式配置代理时保持直连，不受这些变量影响。
-+      # 使用 AXONHUB_ 前缀变量名，避免被宿主机 shell 已导出的 HTTP_PROXY 等覆盖。
 +      HTTP_PROXY: ${AXONHUB_HTTP_PROXY:-}
 +      HTTPS_PROXY: ${AXONHUB_HTTPS_PROXY:-}
 +      NO_PROXY: ${AXONHUB_NO_PROXY:-localhost,127.0.0.1,::1,postgres,172.18.0.0/16,172.19.0.0/16}
 +    extra_hosts:
 +      - "host.docker.internal:host-gateway"
-     ports:
-       - "${AXONHUB_BIND_ADDRESS:-127.0.0.1}:${AXONHUB_HOST_PORT:-8090}:8090"
-     volumes:
-@@ -93,6 +123,7 @@ services:
-         [
-           "CMD",
-           "wget",
++    healthcheck:
++      test:
++        [
++          "CMD",
++          "wget",
 +          "--proxy=off",
-           "--no-verbose",
-           "--tries=1",
-           "--spider",
++          "--no-verbose",
++          "--tries=1",
++          "--spider",
++          "http://localhost:8090/health",
++        ]
 diff --git a/scripts/build-image.sh b/scripts/build-image.sh
 new file mode 100755
-index 00000000..92c00553
+index 0000000..92c0055
 --- /dev/null
 +++ b/scripts/build-image.sh
 @@ -0,0 +1,35 @@
