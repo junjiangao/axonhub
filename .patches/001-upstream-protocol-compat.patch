@@ -1,5 +1,5 @@
 diff --git a/internal/server/orchestrator/pass_through.go b/internal/server/orchestrator/pass_through.go
-index ba300a29..7eef2301 100644
+index 565d958b..1a71ef7b 100644
 --- a/internal/server/orchestrator/pass_through.go
 +++ b/internal/server/orchestrator/pass_through.go
 @@ -1,6 +1,7 @@
@@ -8,25 +8,22 @@ index ba300a29..7eef2301 100644
  import (
 +	"bytes"
  	"context"
- 	"errors"
  	"fmt"
-@@ -686,6 +687,14 @@ func applyPassThroughStream(outbound *PersistentOutboundTransformer, systemServi
- 			rawStream = streams.PrependStream(rawStream, held...)
- 		}
+ 	"mime"
+@@ -529,6 +530,11 @@ func applyPassThroughStream(outbound *PersistentOutboundTransformer) pipeline.Mi
+ 		)
  
+ 		rawStream := streams.Stream[*httpclient.StreamEvent](&passThroughStream{transformed: stream, recorder: recorder})
 +		// Chain the raw-byte normalizations applied to pass-through chunks:
 +		// finish_reason:"" -> null and tool_calls delta function name:"" -> null.
 +		// These normalizations apply to Chat Completions pass-through chunks.
-+		rawStream = streams.Map(
-+			streams.Map(rawStream, normalizePassThroughFinishReason),
-+			normalizePassThroughToolCallName,
-+		)
-+
++		rawStream = streams.Map(rawStream, normalizePassThroughFinishReason)
++		rawStream = streams.Map(rawStream, normalizePassThroughToolCallName)
  		if adaptResponses {
  			rawStream = &responsesTransportStream{
  				stream: rawStream,
-@@ -984,6 +993,123 @@ func (b *rawStreamBacklog) release(size int) {
- 	b.mu.Unlock()
+@@ -547,6 +553,125 @@ func applyPassThroughStream(outbound *PersistentOutboundTransformer) pipeline.Mi
+ 	})
  }
  
 +// normalizePassThroughFinishReason rewrites an empty finish_reason string to null
@@ -56,6 +53,7 @@ index ba300a29..7eef2301 100644
 +
 +	body := ev.Data
 +	rewritten := false
++
 +	choices.ForEach(func(key, value gjson.Result) bool {
 +		reason := value.Get("finish_reason")
 +		if reason.Type != gjson.String || reason.String() != "" {
@@ -111,6 +109,7 @@ index ba300a29..7eef2301 100644
 +
 +	body := ev.Data
 +	rewritten := false
++
 +	choices.ForEach(func(choiceKey, choiceValue gjson.Result) bool {
 +		toolCalls := choiceValue.Get("delta.tool_calls")
 +		if !toolCalls.IsArray() {
@@ -146,6 +145,6 @@ index ba300a29..7eef2301 100644
 +	return &next
 +}
 +
- // passThroughChannelStream wraps a channel as a Stream.
- //
- //nolint:containedctx // Required so Next() can observe request cancellation.
+ // passThroughStream pulls the transformed stream and emits the raw events recorded
+ // while producing each transformed event. Raw events the transformer drops (for
+ // example Anthropic ping) are emitted together with the next transformed event.

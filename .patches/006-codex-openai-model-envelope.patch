@@ -1,16 +1,8 @@
 diff --git a/llm/transformer/openai/codex/models.go b/llm/transformer/openai/codex/models.go
-index dca16b53..e426fe10 100644
+index c4bb5764..d77fa4e9 100644
 --- a/llm/transformer/openai/codex/models.go
 +++ b/llm/transformer/openai/codex/models.go
-@@ -6,6 +6,7 @@ import (
- 	"fmt"
- 	"net/http"
- 	"net/url"
-+	"slices"
- 	"sort"
- 	"strings"
- 
-@@ -65,6 +66,11 @@ func parseModelCatalog(body []byte, supplementImageModel, requireListVisibility
+@@ -66,6 +66,11 @@ func parseModelCatalog(body []byte, supplementImageModel, requireListVisibility
  			Visibility string `json:"visibility"`
  			Priority   int    `json:"priority"`
  		} `json:"models"`
@@ -22,7 +14,7 @@ index dca16b53..e426fe10 100644
  	}
  	if err := json.Unmarshal(body, &response); err != nil {
  		return nil, err
-@@ -85,6 +91,25 @@ func parseModelCatalog(body []byte, supplementImageModel, requireListVisibility
+@@ -86,6 +91,27 @@ func parseModelCatalog(body []byte, supplementImageModel, requireListVisibility
  			models = append(models, model.Slug)
  		}
  	}
@@ -41,18 +33,20 @@ index dca16b53..e426fe10 100644
 +			}
 +			seen[id] = struct{}{}
 +			models = append(models, id)
++			if isCodexImageModel(id) {
++				imageModelsIncluded[id] = true
++			}
 +		}
-+		imageModelIncluded = slices.Contains(models, "gpt-image-2")
 +	}
 +
  	if len(models) == 0 {
  		return nil, fmt.Errorf("Codex catalog has no visible models")
  	}
 diff --git a/llm/transformer/openai/codex/models_test.go b/llm/transformer/openai/codex/models_test.go
-index cb1a186d..d508d2d0 100644
+index eff0c1bc..ce03eebd 100644
 --- a/llm/transformer/openai/codex/models_test.go
 +++ b/llm/transformer/openai/codex/models_test.go
-@@ -50,6 +50,36 @@ func TestCodexModelsIncludeImageModel(t *testing.T) {
+@@ -50,6 +50,36 @@ func TestCodexModelsIncludeImageModels(t *testing.T) {
  	}
  }
  
@@ -67,14 +61,14 @@ index cb1a186d..d508d2d0 100644
 +		require.Equal(t, []string{"gpt-5.6-sol", "gpt-5.6-terra"}, models)
 +	})
 +
-+	t.Run("official supplements image model once", func(t *testing.T) {
-+		// Given a fallback envelope that already lists the image model.
++	t.Run("official supplements image models once", func(t *testing.T) {
++		// Given a fallback envelope that already lists an image model.
 +		body := []byte(`{"data":[{"id":"gpt-image-2"},{"id":"gpt-5.6-sol"}]}`)
 +		// When the official catalog is parsed.
 +		models, err := ParseModelCatalog(body)
-+		// Then the image model is not appended a second time.
++		// Then the listed image model is not appended a second time.
 +		require.NoError(t, err)
-+		require.Equal(t, []string{"gpt-image-2", "gpt-5.6-sol"}, models)
++		require.Equal(t, []string{"gpt-image-2", "gpt-5.6-sol", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare", "gpt-image-2.6-sunburst", "gpt-image-2.6-flare"}, models)
 +	})
 +
 +	t.Run("empty envelope", func(t *testing.T) {

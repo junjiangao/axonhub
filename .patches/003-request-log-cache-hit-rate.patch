@@ -41,29 +41,3 @@ index 4ffd88b4..b064db00 100644
            </div>
          );
        },
-diff --git a/frontend/src/locales/en/requests.json b/frontend/src/locales/en/requests.json
-index 9054f91a..74fc949b 100644
---- a/frontend/src/locales/en/requests.json
-+++ b/frontend/src/locales/en/requests.json
-@@ -8,8 +8,6 @@
-   "requests.columns.duration": "Duration",
-   "requests.columns.caller": "Caller",
-   "requests.columns.cache": "Cache",
--  "requests.columns.read": "read",
--  "requests.columns.write": "write",
-   "requests.columns.apiFormat": "API Format",
-   "requests.columns.passThrough": "Pass-through",
-   "requests.columns.reasoningEffort": "Reasoning Effort",
-diff --git a/frontend/src/locales/zh-CN/requests.json b/frontend/src/locales/zh-CN/requests.json
-index 6b9b6ce5..b2058659 100644
---- a/frontend/src/locales/zh-CN/requests.json
-+++ b/frontend/src/locales/zh-CN/requests.json
-@@ -8,8 +8,6 @@
-   "requests.columns.duration": "耗时",
-   "requests.columns.caller": "调用方",
-   "requests.columns.cache": "缓存",
--  "requests.columns.read": "读",
--  "requests.columns.write": "写",
-   "requests.columns.apiFormat": "API 格式",
-   "requests.columns.passThrough": "透传",
-   "requests.columns.reasoningEffort": "推理强度",
