@@ -1,24 +1,42 @@
 diff --git a/frontend/src/features/requests/components/requests-columns.tsx b/frontend/src/features/requests/components/requests-columns.tsx
-index 4ffd88b4..b064db00 100644
+index 8c167907..1b5ab245 100644
 --- a/frontend/src/features/requests/components/requests-columns.tsx
 +++ b/frontend/src/features/requests/components/requests-columns.tsx
-@@ -536,15 +536,22 @@ export function useRequestsColumns(options?: UseRequestsColumnsOptions): ColumnD
+@@ -26,7 +26,7 @@ import { DataTableColumnHeader } from '@/components/data-table-column-header';
+ import { useGeneralSettings, useSecuritySettings, useUpdateSecuritySettings } from '@/features/system/data/system';
+ import { useRequestPermissions } from '../../../hooks/useRequestPermissions';
+ import { Request } from '../data/schema';
+-import { type MetricColorKey, metricColorTextClass } from '../utils/metric-colors';
++import { type MetricColorKey, METRIC_COLOR_BADGE_CLASS, metricColorBadgeClass, metricColorTextClass } from '../utils/metric-colors';
+ import {
+   calculateTokensPerSecond,
+   calculateTotalTimeTokensPerSecond,
+@@ -89,6 +89,9 @@ export function useRequestsColumns(options?: UseRequestsColumnsOptions): ColumnD
+ 
+     return base ? cn(base, tone) : tone;
+   };
++  // Chip class for a metric value: badges follow the same tier as the text
++  // colours, and a switched-off metric leaves the badge uncoloured.
++  const metricBadgeTone = (key: MetricColorKey, value: number | null | undefined) => metricColorBadgeClass(metricColors, key, value);
+   const locale = i18n.language === 'zh' ? zhCN : enUS;
+   const permissions = useRequestPermissions();
+   const { hasSystemScope } = usePermissions();
+@@ -597,18 +600,18 @@ export function useRequestsColumns(options?: UseRequestsColumnsOptions): ColumnD
+         }
  
          const hitRate = promptTokens > 0 ? (cachedTokens / promptTokens) * 100 : 0;
-         const isLowHitRate = hitRate < 80 && promptTokens >= 40000;
-+        const cacheRateClass = isLowHitRate
-+          ? 'border-red-200 bg-red-50 text-red-600'
-+          : hitRate >= 95
-+            ? 'border-green-200 bg-green-50 text-green-600'
-+            : hitRate >= 50
-+              ? 'border-yellow-200 bg-yellow-50 text-yellow-600'
-+              : 'border-red-200 bg-red-50 text-red-600';
+-        // Same unrounded share as the tokens column, so one row never shows two
+-        // different colours for the same rate.
+-        const hitRateColor = metricTone('cacheHitRate', hitRate, 'font-medium');
++        // Same unrounded share and tier as the tokens column, so one row never
++        // shows two different colours for the same rate.
++        const hitRateTone = metricBadgeTone('cacheHitRate', hitRate);
  
          return (
            <div className='text-xs'>
              <div className='text-sm font-medium'>{cachedTokens.toLocaleString()}</div>
--            <div className={isLowHitRate ? 'font-medium text-red-600 dark:text-red-400' : 'text-muted-foreground'}>
-+            <Badge variant='outline' className={`h-4 px-1 text-[10px] ${cacheRateClass}`}>
+-            <div className={hitRateColor}>
++            <Badge variant='outline' className={cn('h-4 px-1 text-[10px]', hitRateTone)}>
                {t('requests.columns.cacheHitRate', {
                  rate: hitRate.toFixed(1),
                })}
@@ -27,12 +45,14 @@ index 4ffd88b4..b064db00 100644
            </div>
          );
        },
-@@ -577,11 +584,11 @@ export function useRequestsColumns(options?: UseRequestsColumnsOptions): ColumnD
+@@ -641,11 +644,13 @@ export function useRequestsColumns(options?: UseRequestsColumnsOptions): ColumnD
          return (
            <div className='text-xs'>
              <div className='text-sm font-medium'>{writeCachedTokens.toLocaleString()}</div>
 -            <div className='text-muted-foreground'>
-+            <Badge variant='outline' className='h-4 border-blue-200 bg-blue-50 px-1 text-[10px] text-blue-600'>
++            {/* Write-cache rate has no scored threshold, so the chip stays on the
++                neutral blue tier instead of following the editable metric cuts. */}
++            <Badge variant='outline' className={cn('h-4 px-1 text-[10px]', METRIC_COLOR_BADGE_CLASS.blue)}>
                {t('requests.columns.writeCacheRate', {
                  rate: promptTokens > 0 ? ((writeCachedTokens / promptTokens) * 100).toFixed(1) : '0.0',
                })}
@@ -41,3 +61,89 @@ index 4ffd88b4..b064db00 100644
            </div>
          );
        },
+diff --git a/frontend/src/features/requests/utils/metric-colors.test.mjs b/frontend/src/features/requests/utils/metric-colors.test.mjs
+index 0c361ccb..863b8372 100644
+--- a/frontend/src/features/requests/utils/metric-colors.test.mjs
++++ b/frontend/src/features/requests/utils/metric-colors.test.mjs
+@@ -115,6 +115,29 @@ test('colour classes are empty when a metric is off or neutral', () => {
+   );
+ });
+ 
++test('badge classes follow the same tier and stay uncoloured when off', () => {
++  const settings = m.defaultMetricColorSettings();
++
++  assert.equal(
++    m.metricColorBadgeClass(settings, 'cacheHitRate', 96),
++    m.METRIC_COLOR_BADGE_CLASS.green,
++    'a high cache hit rate paints the green chip'
++  );
++  assert.equal(
++    m.metricColorBadgeClass(settings, 'cacheHitRate', 85),
++    m.METRIC_COLOR_BADGE_CLASS.neutral,
++    'a mid rate keeps the neutral chip'
++  );
++  assert.match(m.METRIC_COLOR_BADGE_CLASS.red, /--metric-tier-red-fg/);
++  assert.match(m.METRIC_COLOR_BADGE_CLASS.red, /--metric-tier-red-fill/);
++  assert.equal(m.metricColorBadgeClass(settings, 'firstTokenLatency', null), '');
++  assert.equal(
++    m.metricColorBadgeClass({ ...settings, cacheHitRate: rule([50, 80, 90, 95], false) }, 'cacheHitRate', 99),
++    '',
++    'a disabled metric leaves the badge uncoloured'
++  );
++});
++
+ test('a stored payload round-trips', () => {
+   const settings = m.defaultMetricColorSettings();
+   settings.throughput = rule([5, 15, 30, 80], false);
+@@ -150,4 +173,4 @@ test('unusable payloads fall back to defaults', () => {
+   const repaired = m.parseMetricColorSettings(partial);
+   assert.deepEqual(repaired.cacheHitRate, { enabled: false, cuts: [40, 70, 85, 92] });
+   assert.deepEqual(repaired.throughput, defaults.throughput);
+-});
+\ No newline at end of file
++});
+diff --git a/frontend/src/features/requests/utils/metric-colors.ts b/frontend/src/features/requests/utils/metric-colors.ts
+index 7873aa39..a07e5be2 100644
+--- a/frontend/src/features/requests/utils/metric-colors.ts
++++ b/frontend/src/features/requests/utils/metric-colors.ts
+@@ -110,6 +110,22 @@ export const METRIC_COLOR_TEXT_CLASS: Record<MetricColorTier, string> = {
+   green: METRIC_COLOR_TIER_STYLE.green.text,
+ };
+ 
++/**
++ * Tier palette for chip-style rendering. A chip needs a surface that plain text
++ * colours do not provide: the fill paints the background at low alpha and the
++ * foreground doubles as text and border, so a tier reads the same in both
++ * themes. `neutral` has no foreground token and borrows the muted surface.
++ */
++export const METRIC_COLOR_BADGE_CLASS: Record<MetricColorTier, string> = {
++  red: 'border-[color:var(--metric-tier-red-fg)]/40 bg-[color:var(--metric-tier-red-fill)]/15 text-[color:var(--metric-tier-red-fg)]',
++  yellow:
++    'border-[color:var(--metric-tier-yellow-fg)]/40 bg-[color:var(--metric-tier-yellow-fill)]/15 text-[color:var(--metric-tier-yellow-fg)]',
++  neutral: 'border-border bg-muted text-muted-foreground',
++  blue: 'border-[color:var(--metric-tier-blue-fg)]/40 bg-[color:var(--metric-tier-blue-fill)]/15 text-[color:var(--metric-tier-blue-fg)]',
++  green:
++    'border-[color:var(--metric-tier-green-fg)]/40 bg-[color:var(--metric-tier-green-fill)]/15 text-[color:var(--metric-tier-green-fg)]',
++};
++
+ const HIGHER_IS_BETTER_TIERS: MetricColorTier[] = ['red', 'yellow', 'neutral', 'blue', 'green'];
+ const LOWER_IS_BETTER_TIERS: MetricColorTier[] = ['green', 'blue', 'neutral', 'yellow', 'red'];
+ 
+@@ -209,6 +225,17 @@ export function metricColorTextClass(settings: MetricColorSettings, key: MetricC
+   return METRIC_COLOR_TEXT_CLASS[metricColorTier(key, rule, value)];
+ }
+ 
++/**
++ * Chip class for a value, or an empty string when the metric is switched off so
++ * the caller keeps the neutral badge look instead of forcing a colour.
++ */
++export function metricColorBadgeClass(settings: MetricColorSettings, key: MetricColorKey, value: number | null | undefined): string {
++  const rule = settings[key];
++  if (!rule?.enabled || value === null || value === undefined || !Number.isFinite(value)) return '';
++
++  return METRIC_COLOR_BADGE_CLASS[metricColorTier(key, rule, value)];
++}
++
+ function isFiniteNumber(value: unknown): value is number {
+   return typeof value === 'number' && Number.isFinite(value);
+ }
