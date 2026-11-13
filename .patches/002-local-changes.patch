@@ -61,7 +61,7 @@ new file mode 100644
 index 0000000..acf4e75
 --- /dev/null
 +++ b/docker-compose.override.yml
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,73 @@
 +# AxonHub 本地覆盖层 —— 由 docker compose 自动叠加在 docker-compose.yml 之上。
 +#
 +# 本文件由 .patches/002-local-changes.patch 创建（补丁集的一部分）：
@@ -89,8 +89,25 @@ index 0000000..acf4e75
 +      - timezone=${TZ:-Asia/Shanghai}
 +      - -c
 +      - log_timezone=${TZ:-Asia/Shanghai}
++      - -c
++      - shared_buffers=1GB
++      - -c
++      - effective_cache_size=2GB
++      - -c
++      - maintenance_work_mem=256MB
++      - -c
++      - max_wal_size=2GB
++      - -c
++      - max_connections=50
 +    environment:
 +      TZ: ${TZ:-Asia/Shanghai}
++    # 参数按清理后的 2-6 GB 数据库与峰值并发 ~10 取值；shared_buffers 与 max_connections
++    # 只在启动时读取，改完需要重建容器。宿主内存有限，用限额避免数据库无上限占用 page cache。
++    deploy:
++      resources:
++        limits:
++          cpus: "${POSTGRES_CPU_LIMIT:-2.0}"
++          memory: ${POSTGRES_MEMORY_LIMIT:-3G}
 +
 +  axonhub:
 +    build:
