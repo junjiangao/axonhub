@@ -11,7 +11,6 @@ PATCHES_DIR="$(cd "$(dirname "$0")" && pwd)"
 PATCHES=(
   "001-upstream-protocol-compat.patch"
   "002-local-changes.patch"
-  "003-request-log-cache-hit-rate.patch"
   "004-channel-proxy-direct-by-default.patch"
   "005-responses-reasoning-delta-alias.patch"
   "006-codex-openai-model-envelope.patch"
