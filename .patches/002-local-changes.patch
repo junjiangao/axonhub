@@ -90,18 +90,18 @@ index 0000000..acf4e75
 +      - -c
 +      - log_timezone=${TZ:-Asia/Shanghai}
 +      - -c
-+      - shared_buffers=1GB
++      - shared_buffers=512MB
 +      - -c
-+      - effective_cache_size=2GB
++      - effective_cache_size=1GB
 +      - -c
-+      - maintenance_work_mem=256MB
++      - maintenance_work_mem=128MB
 +      - -c
-+      - max_wal_size=2GB
++      - max_wal_size=1GB
 +      - -c
 +      - max_connections=50
 +    environment:
 +      TZ: ${TZ:-Asia/Shanghai}
-+    # 参数按清理后的 2-6 GB 数据库与峰值并发 ~10 取值；shared_buffers 与 max_connections
++    # 参数按清理后约 37 MB 的数据库与峰值并发 ~10 取值；shared_buffers 与 max_connections
 +    # 只在启动时读取，改完需要重建容器。宿主内存有限，用限额避免数据库无上限占用 page cache。
 +    deploy:
 +      resources:
